@@ -1,0 +1,5 @@
+{
+  "name": "claude-mod-map",
+  "owner": { "name": "mraad" },
+  "plugins": [{ "name": "arcgis-map", "source": "./arcgis-map" }]
+}

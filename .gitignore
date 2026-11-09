@@ -1,0 +1,9 @@
+# Engine-written mod types (regenerated per session)
+arcgis-map/.claude-plugin/types/
+# Per-machine Claude Code settings and session id
+.claude/settings.local.json
+.resume
+.DS_Store
+
+# Chrome profile of the /map browser window
+arcgis-map/.browser-profile/

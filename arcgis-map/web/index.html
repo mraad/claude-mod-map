@@ -1,0 +1,215 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Claude Map</title>
+    <script>
+      // Optional: ?apiKey=... enables Esri basemap styles; OSM needs no key.
+      const apiKey = new URLSearchParams(location.search).get('apiKey')
+      if (apiKey) var esriConfig = { apiKey }
+    </script>
+    <script type="module" src="https://js.arcgis.com/5.2/"></script>
+    <style>
+      html, body { height: 100%; margin: 0; font-family: system-ui, sans-serif; }
+      #badge {
+        position: absolute; right: 12px; bottom: 28px; z-index: 10;
+        padding: 4px 10px; border-radius: 4px; font-size: 12px;
+        background: #222c; color: #fff;
+      }
+      #badge.live::before { content: '● '; color: #3c3; }
+      #badge.down::before { content: '● '; color: #d33; }
+    </style>
+  </head>
+  <body>
+    <arcgis-map basemap="osm" center="0, 20" zoom="2">
+      <arcgis-zoom slot="top-left"></arcgis-zoom>
+      <arcgis-layer-list slot="top-right"></arcgis-layer-list>
+    </arcgis-map>
+    <div id="badge" class="down">Claude: connecting</div>
+
+    <script type="module">
+      const [Graphic, GraphicsLayer, FeatureLayer, GeoJSONLayer, TileLayer, VectorTileLayer, ImageryLayer, Layer, reactiveUtils, ParquetLayer, ParquetFilesData] =
+        await Promise.all(
+          [
+            'Graphic', 'layers/GraphicsLayer', 'layers/FeatureLayer', 'layers/GeoJSONLayer', 'layers/TileLayer',
+            'layers/VectorTileLayer', 'layers/ImageryLayer', 'layers/Layer', 'core/reactiveUtils', 'layers/ParquetLayer', 'layers/support/ParquetFilesData',
+          ].map(m => $arcgis.import(`@arcgis/core/${m}.js`)),
+        )
+
+      const mapEl = document.querySelector('arcgis-map')
+      await mapEl.viewOnReady()
+      const view = mapEl.view
+      const map = mapEl.map
+      const badge = document.getElementById('badge')
+      // Inside the Claude Code pane (viewer.mjs) the pane shows status and layers; keep the map clear.
+      if (new URLSearchParams(location.search).has('embedded')) {
+        badge.hidden = true
+        document.querySelector('arcgis-layer-list')?.remove()
+      }
+
+      const WGS84 = { wkid: 4326 }
+      const DEFAULT_SYMBOL = {
+        point: { type: 'simple-marker', color: [226, 61, 40], size: 10, outline: { color: 'white', width: 1 } },
+        polyline: { type: 'simple-line', color: [226, 61, 40], width: 3 },
+        polygon: { type: 'simple-fill', color: [226, 61, 40, 0.35], outline: { color: [226, 61, 40], width: 2 } },
+      }
+
+      // GeoJSON geometry -> ArcGIS autocast geometry (WGS84).
+      function toGeometry(g) {
+        switch (g?.type) {
+          case 'Point': return { type: 'point', longitude: g.coordinates[0], latitude: g.coordinates[1] }
+          case 'MultiPoint': return { type: 'multipoint', points: g.coordinates, spatialReference: WGS84 }
+          case 'LineString': return { type: 'polyline', paths: [g.coordinates], spatialReference: WGS84 }
+          case 'MultiLineString': return { type: 'polyline', paths: g.coordinates, spatialReference: WGS84 }
+          case 'Polygon': return { type: 'polygon', rings: g.coordinates, spatialReference: WGS84 }
+          case 'MultiPolygon': return { type: 'polygon', rings: g.coordinates.flat(), spatialReference: WGS84 }
+          default: throw new Error(`unsupported geometry type: ${g?.type}`)
+        }
+      }
+
+      function graphicsLayer(title) {
+        let layer = map.layers.find(l => l.type === 'graphics' && l.title === title)
+        if (!layer) {
+          layer = new GraphicsLayer({ title })
+          map.add(layer)
+        }
+        return layer
+      }
+
+      function snapshot() {
+        return {
+          layers: map.layers.toArray().map(l => ({
+            id: l.id,
+            title: l.title ?? l.id,
+            type: l.type,
+            ...(l.type === 'graphics' ? { count: l.graphics.length } : {}),
+          })),
+          center: [+view.center.longitude.toFixed(5), +view.center.latitude.toFixed(5)],
+          zoom: Math.round(view.zoom * 10) / 10,
+        }
+      }
+
+      const abs = u => new URL(u, location.href).href
+      const needUrl = (type, url) => {
+        if (!url) throw new Error(`${type} layer needs url or path`)
+        return abs(url)
+      }
+      const byUrl = Ctor => a => new Ctor({ url: needUrl(a.type, a.url) })
+      const LAYER_TYPES = {
+        feature: byUrl(FeatureLayer),
+        geojson: byUrl(GeoJSONLayer),
+        tile: byUrl(TileLayer),
+        'vector-tile': byUrl(VectorTileLayer),
+        imagery: byUrl(ImageryLayer),
+        parquet: a => {
+          const urls = [a.url, ...(a.urls ?? [])].filter(Boolean).map(abs)
+          if (!urls.length) throw new Error('parquet layer needs url, urls or path')
+          return new ParquetLayer({ data: new ParquetFilesData({ urls }) })
+        },
+        'portal-item': a => {
+          if (!a.itemId) throw new Error('portal-item needs itemId')
+          return Layer.fromPortalItem({ portalItem: { id: a.itemId } })
+        },
+      }
+
+      // fullExtent is the whole service; queryExtent honours definitionExpression (feature, GeoJSON, Parquet).
+      async function extentOf(layer) {
+        if (layer.type === 'graphics') return layer.graphics.toArray()
+        if (layer.queryExtent) {
+          const { count, extent } = await layer.queryExtent()
+          if (count > 0 && extent) return extent
+        }
+        return layer.fullExtent
+      }
+
+      function findLayer(key) {
+        const layer = map.findLayerById(key) ?? map.layers.find(l => l.title === key)
+        if (!layer) throw new Error(`no layer with id or title "${key}"`)
+        return layer
+      }
+
+      const ops = {
+        async add_graphic({ geometry, symbol, attributes, popupTitle, layer = 'Graphics' }) {
+          const geom = toGeometry(geometry)
+          const target = graphicsLayer(layer)
+          let popupTemplate
+          if (popupTitle || attributes) {
+            popupTemplate = { title: popupTitle ?? layer }
+            if (attributes) popupTemplate.content = [{ type: 'fields', fieldInfos: Object.keys(attributes).map(fieldName => ({ fieldName })) }]
+          }
+          target.add(new Graphic({
+            geometry: geom,
+            symbol: symbol ?? DEFAULT_SYMBOL[geom.type === 'multipoint' ? 'point' : geom.type],
+            attributes,
+            popupTemplate,
+          }))
+          return { layerId: target.id, graphics: target.graphics.length }
+        },
+
+        async add_layer(args) {
+          const make = LAYER_TYPES[args.type]
+          if (!make) throw new Error(`unknown layer type: ${args.type}`)
+          const layer = await make(args)
+          const { title, renderer, definitionExpression, opacity, zoomTo = true } = args
+          if (title) layer.title = title
+          if (opacity != null) layer.opacity = opacity
+          if (definitionExpression && 'definitionExpression' in layer) layer.definitionExpression = definitionExpression
+          if (renderer && 'renderer' in layer) layer.renderer = renderer
+          try {
+            await layer.load()
+          } catch (err) {
+            throw new Error(`layer failed to load: ${err.message}`)
+          }
+          map.add(layer)
+          if (zoomTo) await view.goTo(await extentOf(layer)).catch(() => {})
+          return { layerId: layer.id, title: layer.title, type: layer.type }
+        },
+
+        async remove_layer({ id }) {
+          const layer = findLayer(id)
+          map.remove(layer)
+          return { removed: layer.id }
+        },
+
+        async clear_graphics({ layer }) {
+          const targets = layer ? [findLayer(layer)] : map.layers.filter(l => l.type === 'graphics').toArray()
+          const other = targets.find(l => l.type !== 'graphics')
+          if (other) throw new Error(`"${other.title ?? other.id}" is a ${other.type} layer, not a graphics layer`)
+          targets.forEach(l => l.removeAll())
+          return { cleared: targets.length }
+        },
+
+        async go_to({ center, zoom, layerId }) {
+          if (layerId) {
+            await view.goTo(await extentOf(findLayer(layerId)))
+          } else {
+            await view.goTo({ ...(center ? { center } : {}), ...(zoom != null ? { zoom } : {}) })
+          }
+          return {}
+        },
+      }
+
+      const post = (path, body) =>
+        fetch(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ...body, state: snapshot() }) })
+
+      const events = new EventSource('/events')
+      events.onopen = () => { badge.className = 'live'; badge.textContent = 'Claude: connected'; post('/state', {}) }
+      events.onerror = () => { badge.className = 'down'; badge.textContent = 'Claude: disconnected' }
+      events.onmessage = async msg => {
+        const { id, op, args } = JSON.parse(msg.data)
+        try {
+          if (!ops[op]) throw new Error(`unknown op: ${op}`)
+          await post('/ack', { id, ok: true, result: await ops[op](args) })
+        } catch (err) {
+          await post('/ack', { id, ok: false, error: String(err?.message ?? err) })
+        }
+      }
+      // Tell the bridge when the user pans or changes layers by hand.
+      let timer
+      const report = () => { clearTimeout(timer); timer = setTimeout(() => post('/state', {}), 500) }
+      reactiveUtils.watch(() => view.stationary, s => s && report())
+      map.layers.on('change', report)
+    </script>
+  </body>
+</html>
