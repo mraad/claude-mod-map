@@ -3,7 +3,7 @@ import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import { once } from 'node:events'
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, utimesSync, writeFileSync } from 'node:fs'
 import { request } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -30,7 +30,7 @@ const stopBridge = async child => {
 }
 
 before(async () => {
-  bridge = await startBridge(PORT)
+  bridge = await startBridge(PORT, { ARCGIS_MAP_TIMEOUT_MS: '1000' })
 })
 after(() => stopBridge(bridge))
 
@@ -183,6 +183,19 @@ test('the first page that succeeds answers, even when another page failed first'
   failing.close()
 })
 
+test('a command no page answered in time stays in the log: it may still finish, so later pages replay it', async () => {
+  const silent = page({ answer: () => undefined })
+  await silent.until(() => silent.messages.length)
+  const res = await cmd('add_graphic', { geometry: { type: 'Point', coordinates: [5, 6] }, layer: 'Slow' })
+  assert.equal(res.status, 422)
+  assert.match(res.error, /did not answer in 1000 ms/)
+  silent.close()
+  const later = page()
+  await later.until(() => later.messages.some(m => m.args?.layer === 'Slow'))
+  assert.ok(later.messages.some(m => m.replay && m.args?.layer === 'Slow'))
+  later.close()
+})
+
 test('a screenshot is written to a PNG file; its path answers, not the picture', async () => {
   const png = Buffer.from('89504e470d0a1a0a', 'hex')
   const tab = page({ answer: () => ({ ok: true, result: { dataUrl: `data:image/png;base64,${png.toString('base64')}`, width: 8, height: 4 } }) })
@@ -197,6 +210,13 @@ test('a screenshot is written to a PNG file; its path answers, not the picture',
 test('a session map is saved: a new bridge for the same session replays it, with the local path served again', async () => {
   const home = mkdtempSync(join(tmpdir(), 'bridge-home-'))
   const env = { HOME: home, ARCGIS_MAP_SESSION: 'session-1' }
+  const sessions = join(home, '.claude/arcgis-map/sessions')
+  const old = join(sessions, 'old-session')
+  const recent = join(sessions, 'recent-session')
+  mkdirSync(old, { recursive: true })
+  mkdirSync(recent, { recursive: true })
+  const longAgo = new Date(Date.now() - 31 * 24 * 3600 * 1000)
+  utimesSync(old, longAgo, longAgo)
   const file = join(home, 'sites.geojson')
   writeFileSync(file, '{"type":"FeatureCollection","features":[]}')
   let saved = await startBridge(SAVED_PORT, env)
@@ -207,6 +227,8 @@ test('a session map is saved: a new bridge for the same session replays it, with
   tab.close()
   await stopBridge(saved)
   assert.ok(existsSync(join(home, '.claude/arcgis-map/sessions/session-1/map.json')))
+  assert.equal(existsSync(old), false, 'a session map untouched for 30 days is deleted')
+  assert.ok(existsSync(recent))
 
   saved = await startBridge(SAVED_PORT, env)
   const next = page({ port: SAVED_PORT })

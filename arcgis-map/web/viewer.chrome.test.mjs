@@ -5,7 +5,7 @@ import assert from 'node:assert/strict'
 import { execFileSync, spawn } from 'node:child_process'
 import { existsSync, statSync } from 'node:fs'
 import { dirname } from 'node:path'
-import { readFileSync } from 'node:fs'
+import { readFileSync, statSync as fileSize } from 'node:fs'
 import { createInterface } from 'node:readline'
 
 import { startViewer } from './viewer.mjs'
@@ -114,19 +114,39 @@ test('the tools work on the real page; a page that connects later rebuilds the s
   assert.equal(wrong.status, 422)
   assert.match(wrong.error, /graphics layer has no definitionExpression/)
   assert.equal((await cmd('set_basemap', { basemap: 'no-such-basemap' })).status, 422)
+  // GeoParquet from a local path: the bridge serves it with HEAD and Range, ParquetLayer reads it, a filter applies.
+  const cities = new URL('../../examples/cities.parquet', import.meta.url).pathname
+  await cmd('go_to', { center: [100, -60], zoom: 6 })
+  const parquet = await cmd('add_layer', { type: 'parquet', path: cities, title: 'Cities', definitionExpression: '"order" <= 3' })
+  assert.equal(parquet.status, 200, parquet.error)
+  assert.equal(parquet.result.type, 'parquet')
+  // It zooms to the file bbox from the footer: lon -122.4..151.2, lat -33.9..48.9, center near [14.4, 7.5].
+  const [lon, lat] = parquet.state.center
+  assert.ok(Math.abs(lon - 14.4) < 10 && Math.abs(lat - 7.5) < 10, `center ${lon}, ${lat}`)
+  for (let i = 0; i < 20; i++) await cmd('add_graphic', { geometry: { type: 'Point', coordinates: [i, i] }, layer: 'Notes' })
 
   const shot = await cmd('screenshot')
   assert.equal(shot.status, 200, shot.error)
   assert.equal(readFileSync(shot.result.path).subarray(1, 4).toString(), 'PNG')
+  // OSM tiles make a picture of hundreds of KB; a map without its basemap is a few KB.
+  assert.ok(fileSize(shot.result.path).size > 50000, 'the failed basemap left the old one in place')
+  const sized = await cmd('screenshot', { width: 400, height: 300 })
+  const png = readFileSync(sized.result.path)
+  assert.deepEqual([png.readUInt32BE(16), png.readUInt32BE(20)], [400, 300], 'IHDR width and height')
 
   await page.close()
   await waitConnected(false)
+  lines.length = 0
   page = await open()
   await waitConnected()
+  await sleep(2000)
+  // 24 logged commands replay; the page answers none and reports once at the end.
+  const states = lines.filter(line => line.startsWith('STATE ')).length
+  assert.ok(states <= 4, `${states} STATE lines while the page replayed`)
   // Only a page that replayed the log has a layer with this id.
   const again = await cmd('update_layer', { id: layerId, opacity: 0.5 })
   assert.equal(again.status, 200, again.error)
   const titles = again.state.layers.map(l => l.title)
-  assert.deepEqual(titles, ['Results', 'Notes'])
+  assert.deepEqual(titles, ['Results', 'Notes', 'Cities'])
   await page.close()
 })
