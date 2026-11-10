@@ -50,8 +50,8 @@ Claude tool call ──> hooks/register.tsx ──$.http.fetch──> web/server
 - `$.state` atoms carry a `shape` tag (`status-2`, `frame-2`): bump it when `types/index.d.ts` changes, or old stored values reach new code.
 - One `tool.call` hook serves all nine tools via the RegExp matcher `/^mcp__arcgis-map__/` (the engine's tool-name type lists only tools seen at load, so a string matcher fails `tsc`). Args are picked from the tool's `inputSchema.properties`: a new field must be in the schema to reach the page.
 - The bridge reads `index.html` once at startup; page changes need a bridge restart (a mod reload does it).
-- Zooming to a layer uses `queryExtent()` so `definitionExpression` filters are honoured (not `fullExtent`). Exception: SDK 5.2 `ParquetLayer` has no extent (null `fullExtent`, `queryExtent` throws, queries return no geometry), so `parquetExtent` reads the GeoParquet `bbox` from the file footer (two Range reads) and ignores the filter. `view.goTo` needs an `Extent` instance, not a plain object.
-- New layers always go on top (no reorder op). The log only grows (`shortcut:` in `server.mjs`).
+- Zooming to a layer uses `queryExtent()` so `definitionExpression` filters are honoured (not `fullExtent`). A GeoParquet file the SDK cannot decode (seen with GDAL 3.13 output: it loads, draws nothing, every query throws) is refused by `add_layer`; duckdb output works. `examples/cities.parquet` is written by duckdb.
+- New layers always go on top (no reorder op). `set_basemap` builds keyless basemaps (`KEYLESS` in `index.html`: Esri raster tiles) and refuses `arcgis/...` styles without `?apiKey=` (they load slowly with no tiles and leave the view at zoom -1); it answers only once `view.zoom >= 0` again. The log only grows (`shortcut:` in `server.mjs`).
 - `add_layer` and `update_layer` share `setProperties` in `index.html`: a property the layer lacks is an error, never skipped.
 - `shortcut:` comments mark accepted limits: fixed port 8765 (one map per machine), 1:2 terminal cell assumption, browser window on the right half of the focused screen.
 - `ARCGIS_MAP_TIMEOUT_MS` overrides the 15 s default command timeout (the server test uses 1000).

@@ -61,7 +61,7 @@ const TOOLS = [
   {
     name: 'add_layer',
     description:
-      'Add a map layer to the live map, then zoom to it: a service URL, a GeoJSON, CSV or GeoParquet file (URL or local path), inline GeoJSON (data), or an ArcGIS Online portal item id. Use data for analysis results: one call for all features. Features get a popup of their attributes. A parquet layer zooms to its whole file, even when filtered. Answers the new layer id or the load error.',
+      'Add a map layer to the live map, then zoom to it: a service URL, a GeoJSON, CSV or GeoParquet file (URL or local path), inline GeoJSON (data), or an ArcGIS Online portal item id. Use data for analysis results: one call for all features. Features get a popup of their attributes. Answers the new layer id or the load error.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -111,7 +111,7 @@ const TOOLS = [
   {
     name: 'set_basemap',
     description:
-      'Change the basemap of the live map. "osm" needs no key; Esri styles (e.g. "arcgis/topographic", "arcgis/imagery", "arcgis/dark-gray") need the page opened with ?apiKey=.',
+      'Change the basemap of the live map; layers stay on top. No key needed: "osm", "dark-gray" (dark mode), "light-gray", "imagery", "topo", "streets". Esri styles (e.g. "arcgis/topographic") need the page opened with ?apiKey= and are refused without one.',
     inputSchema: { type: 'object', properties: { basemap: { type: 'string' } }, required: ['basemap'] },
   },
   {

@@ -41,7 +41,7 @@ Claude --tool call--> mod (hooks/register.tsx) --POST /cmd--> bridge (web/server
 - Any browser works too: `http://127.0.0.1:8765/`.
 - The bridge only answers requests whose Host is `127.0.0.1:8765` and that carry no foreign Origin, so other web pages (and DNS rebinding) cannot reach it. Open the map at `127.0.0.1`, not `localhost`.
 - Control endpoints (`/cmd`, `/input`) also need a per-load random token that only the mod knows (`ARCGIS_MAP_TOKEN`), and registered file URLs carry random keys, so other local programs cannot drive the map or read files through it. Single-user machine assumed.
-- Basemap is OSM (no key). Add `?apiKey=...` to the page URL to use Esri basemap styles with `set_basemap`.
+- Basemap is OSM. `set_basemap` also takes `dark-gray` (dark mode), `light-gray`, `imagery`, `topo` and `streets` with no key (Esri raster tiles from `services.arcgisonline.com`). Esri basemap styles (`arcgis/...`) need `?apiKey=...` in the page URL; without it `set_basemap` refuses them.
 
 ## Run from this folder (development)
 
@@ -66,7 +66,13 @@ node --test arcgis-map/web/        # bridge, viewer input mapping, real-Chrome v
 
 `examples/cities-route.geojson`: one FeatureCollection with seven city Points (Sydney, Dubai, Beirut, Florence, Paris, New York, San Francisco) and one geodesic LineString through them in that order, densified along great circles (32 points per leg, 27,397 km). It is the data behind the screenshot above.
 
-`examples/cities.parquet`: the seven cities as GeoParquet 1.1 (Snappy, WKB, written with `ogr2ogr -f Parquet ... -where "kind = 'city'" -lco COMPRESSION=SNAPPY`). Try `add_layer {"type": "parquet", "path": "<repo>/examples/cities.parquet"}`. A GeoParquet layer zooms to the file bbox from its footer metadata, not to a filtered subset: SDK 5.2 `ParquetLayer` gives no extent.
+`examples/cities.parquet`: the seven cities as GeoParquet (WKB, Snappy), written with duckdb:
+
+```sh
+duckdb -c "LOAD spatial; COPY (SELECT name, \"order\", geom AS geometry FROM ST_Read('examples/cities-route.geojson') WHERE kind='city' ORDER BY \"order\") TO 'examples/cities.parquet' (FORMAT parquet, COMPRESSION snappy)"
+```
+
+Try `add_layer {"type": "parquet", "path": "<repo>/examples/cities.parquet"}`. The same cities written by GDAL 3.13 (`ogr2ogr -f Parquet`) load but draw nothing in SDK 5.2, so `add_layer` refuses such a file with an error.
 
 ## License
 
