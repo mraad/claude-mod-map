@@ -271,13 +271,14 @@ const server = createServer(async (req, res) => {
           if (++failures >= expected) settle(firstError)
         })
         const timer = setTimeout(
-          () => settle(firstError ?? { ok: false, error: `the map did not answer in ${timeout} ms; it may still finish, so call map_state before retrying` }),
+          () => settle(firstError ?? { ok: false, timedOut: true, error: `the map did not answer in ${timeout} ms; it may still finish, so call map_state before retrying` }),
           timeout,
         )
         const message = toPage(entry, false)
         for (const tab of tabs) sse(tab, message)
       })
-      if (isLogged && !ack.ok) log = log.filter(e => e !== entry)
+      // A timed-out command may still finish on a page: keep it, so later pages replay the same map.
+      if (isLogged && !ack.ok && !ack.timedOut) log = log.filter(e => e !== entry)
       if (isLogged) save()
       let { result } = ack
       if (ack.ok && cmd.op === 'screenshot' && typeof result?.dataUrl === 'string') {

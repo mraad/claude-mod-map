@@ -208,10 +208,17 @@
           return { cleared: targets.length }
         },
 
+        // A basemap that fails (unknown id, Esri style without a key) leaves the previous one in place.
         async set_basemap({ basemap }) {
-          map.basemap = basemap
-          if (!map.basemap) throw new Error(`unknown basemap "${basemap}"`)
-          await map.basemap.load()
+          const previous = map.basemap
+          try {
+            map.basemap = basemap
+            if (!map.basemap) throw new Error(`unknown basemap "${basemap}"`)
+            await map.basemap.load()
+          } catch (err) {
+            map.basemap = previous
+            throw err
+          }
           return { basemap }
         },
 
@@ -246,7 +253,11 @@
       const events = new EventSource('/events')
       events.onopen = () => { badge.className = 'live'; badge.textContent = 'Claude: connected' }
       events.onerror = () => { badge.className = 'down'; badge.textContent = 'Claude: disconnected' }
-      events.onmessage = msg => { const command = JSON.parse(msg.data); queue = queue.then(() => handle(command)) }
+      // A failed /ack post (bridge restarting) must not stop the queue for every later command.
+      events.onmessage = msg => {
+        const command = JSON.parse(msg.data)
+        queue = queue.then(() => handle(command)).catch(err => console.warn(`${command.op} failed:`, err))
+      }
       // Tell the bridge when the user pans or changes layers by hand.
       let timer
       const report = () => { clearTimeout(timer); timer = setTimeout(() => post('/state', {}), 500) }
