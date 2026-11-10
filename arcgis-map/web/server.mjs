@@ -11,7 +11,7 @@
 // With ARCGIS_MAP_SESSION set, the log and the view are saved there, so a mod reload or `--resume` gets the map back.
 import { createServer } from 'node:http'
 import { createReadStream, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { homedir, tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
 import { text } from 'node:stream/consumers'
@@ -19,7 +19,10 @@ import { text } from 'node:stream/consumers'
 import { startViewer } from './viewer.mjs'
 
 const PORT = Number(process.argv[2] ?? 8765)
-const PAGE = readFileSync(new URL('./index.html', import.meta.url))
+// An open page keeps its code across bridge restarts: each connect sends this version, and a page with another one reloads.
+const TEMPLATE = readFileSync(new URL('./index.html', import.meta.url), 'utf8')
+const PAGE_VERSION = createHash('sha256').update(TEMPLATE).digest('hex').slice(0, 12)
+const PAGE = TEMPLATE.replace('__PAGE_VERSION__', PAGE_VERSION)
 // A large local file or a slow service can take a while to load; the rest is quick.
 const TIMEOUT_MS = { add_layer: 60000, screenshot: 30000 }
 // A duration from the environment; zero, negative or not a number keeps the default (Node runs a NaN timer in 1 ms).
@@ -191,7 +194,7 @@ const server = createServer(async (req, res) => {
         'cache-control': 'no-cache',
         connection: 'keep-alive',
       })
-      res.write(': connected\n\n')
+      res.write(`: connected\n\nevent: version\ndata: ${PAGE_VERSION}\n\n`)
       // A page that reconnects to this log gets only what it missed; any other page starts over.
       const [lastEpoch, lastN] = String(req.headers['last-event-id'] ?? '').split(':')
       const isKnown = lastEpoch === epoch && Number(lastN) < nextId

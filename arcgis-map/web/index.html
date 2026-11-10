@@ -287,6 +287,9 @@
       }
 
       const events = new EventSource('/events')
+      // The bridge serves a newer page after a restart: reload, or this page keeps running its old code.
+      const PAGE_VERSION = '__PAGE_VERSION__'
+      events.addEventListener('version', e => e.data !== PAGE_VERSION && location.reload())
       events.onopen = () => { badge.className = 'live'; badge.textContent = 'Claude: connected' }
       events.onerror = () => { badge.className = 'down'; badge.textContent = 'Claude: disconnected' }
       // A failed /ack post (bridge restarting) must not stop the queue for every later command.
