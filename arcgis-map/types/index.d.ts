@@ -1,4 +1,4 @@
-export type MapLayer = { id: string; title: string; type: string; count?: number }
+export type MapLayer = { id: string; title: string; type: string; count?: number; visible?: false }
 
 export type MapStatus = {
   isConnected: boolean

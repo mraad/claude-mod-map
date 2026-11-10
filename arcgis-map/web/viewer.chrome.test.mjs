@@ -5,7 +5,10 @@ import assert from 'node:assert/strict'
 import { execFileSync, spawn } from 'node:child_process'
 import { existsSync, statSync } from 'node:fs'
 import { dirname } from 'node:path'
+import { readFileSync } from 'node:fs'
 import { createInterface } from 'node:readline'
+
+import { startViewer } from './viewer.mjs'
 
 const CHROME = process.env.CHROME ?? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
 const PORT = 18769
@@ -15,6 +18,13 @@ const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
 const post = (path, body) =>
   fetch(`${BASE}${path}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
 const state = async () => (await fetch(`${BASE}/state`)).json()
+const cmd = async (op, args = {}) => {
+  const res = await post('/cmd', { op, args })
+  return { status: res.status, ...(await res.json()) }
+}
+const waitConnected = async (isConnected = true) => {
+  for (let i = 0; i < 300 && (await state()).isConnected !== isConnected; i++) await sleep(100)
+}
 
 let bridge
 const lines = []
@@ -78,4 +88,45 @@ test('a pane that stops posting frees Chrome (VIEWER idle)', { skip, timeout: 60
   const [, path] = (await waitLine(/^FRAME /)).split(' ')
   await waitLine(/^VIEWER idle$/, 30000)
   assert.equal(existsSync(dirname(path)), false, 'its temp folder is gone')
+})
+
+test('the tools work on the real page; a page that connects later rebuilds the same map', { skip, timeout: 90000 }, async () => {
+  const open = () => startViewer({ url: `${BASE}/`, columns: 80, rows: 30, onFrame: () => {} })
+  let page = await open()
+  await waitConnected()
+  const data = {
+    type: 'FeatureCollection',
+    features: [
+      { type: 'Feature', geometry: { type: 'Point', coordinates: [47.98, 29.37] }, properties: { name: 'Kuwait City', score: 3 } },
+      { type: 'Feature', geometry: { type: 'Point', coordinates: [50.58, 26.22] }, properties: { name: 'Manama', score: 7 } },
+    ],
+  }
+  const added = await cmd('add_layer', { type: 'geojson', data, title: 'Results' })
+  assert.equal(added.status, 200, added.error)
+  const { layerId } = added.result
+  assert.match(layerId, /^L\d+$/)
+
+  const labels = [{ labelExpressionInfo: { expression: '$feature.name' }, symbol: { type: 'text', color: 'black' } }]
+  const renderer = { type: 'simple', symbol: { type: 'simple-marker', color: 'blue', size: 9 } }
+  assert.equal((await cmd('update_layer', { id: 'Results', renderer, labelingInfo: labels, definitionExpression: 'score > 5' })).status, 200)
+  assert.equal((await cmd('add_graphic', { geometry: { type: 'Point', coordinates: [0, 0] }, layer: 'Notes' })).status, 200)
+  const wrong = await cmd('update_layer', { id: 'Notes', definitionExpression: 'x = 1' })
+  assert.equal(wrong.status, 422)
+  assert.match(wrong.error, /graphics layer has no definitionExpression/)
+  assert.equal((await cmd('set_basemap', { basemap: 'no-such-basemap' })).status, 422)
+
+  const shot = await cmd('screenshot')
+  assert.equal(shot.status, 200, shot.error)
+  assert.equal(readFileSync(shot.result.path).subarray(1, 4).toString(), 'PNG')
+
+  await page.close()
+  await waitConnected(false)
+  page = await open()
+  await waitConnected()
+  // Only a page that replayed the log has a layer with this id.
+  const again = await cmd('update_layer', { id: layerId, opacity: 0.5 })
+  assert.equal(again.status, 200, again.error)
+  const titles = again.state.layers.map(l => l.title)
+  assert.deepEqual(titles, ['Results', 'Notes'])
+  await page.close()
 })

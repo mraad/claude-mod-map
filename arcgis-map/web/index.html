@@ -25,17 +25,16 @@
     <arcgis-map basemap="osm" center="0, 20" zoom="2">
       <arcgis-zoom slot="top-left"></arcgis-zoom>
       <arcgis-layer-list slot="top-right"></arcgis-layer-list>
+      <arcgis-expand slot="bottom-left" expand-tooltip="Legend"><arcgis-legend></arcgis-legend></arcgis-expand>
     </arcgis-map>
     <div id="badge" class="down">Claude: connecting</div>
 
     <script type="module">
-      const [Graphic, GraphicsLayer, FeatureLayer, GeoJSONLayer, TileLayer, VectorTileLayer, ImageryLayer, Layer, reactiveUtils, ParquetLayer, ParquetFilesData] =
-        await Promise.all(
-          [
-            'Graphic', 'layers/GraphicsLayer', 'layers/FeatureLayer', 'layers/GeoJSONLayer', 'layers/TileLayer',
-            'layers/VectorTileLayer', 'layers/ImageryLayer', 'layers/Layer', 'core/reactiveUtils', 'layers/ParquetLayer', 'layers/support/ParquetFilesData',
-          ].map(m => $arcgis.import(`@arcgis/core/${m}.js`)),
-        )
+      const [Graphic, GraphicsLayer, reactiveUtils] = await Promise.all(
+        ['Graphic', 'layers/GraphicsLayer', 'core/reactiveUtils'].map(m => $arcgis.import(`@arcgis/core/${m}.js`)),
+      )
+      // Layer classes load on first use: a map with only graphics never fetches them.
+      const use = m => $arcgis.import(`@arcgis/core/layers/${m}.js`)
 
       const mapEl = document.querySelector('arcgis-map')
       await mapEl.viewOnReady()
@@ -68,10 +67,11 @@
         }
       }
 
-      function graphicsLayer(title) {
+      // The bridge names each new layer (layerId), so every page that replays the log has the same ids.
+      function graphicsLayer(title, id) {
         let layer = map.layers.find(l => l.type === 'graphics' && l.title === title)
         if (!layer) {
-          layer = new GraphicsLayer({ title })
+          layer = new GraphicsLayer({ id, title })
           map.add(layer)
         }
         return layer
@@ -84,6 +84,7 @@
             title: l.title ?? l.id,
             type: l.type,
             ...(l.type === 'graphics' ? { count: l.graphics.length } : {}),
+            ...(l.visible ? {} : { visible: false }),
           })),
           center: [+view.center.longitude.toFixed(5), +view.center.latitude.toFixed(5)],
           zoom: Math.round(view.zoom * 10) / 10,
@@ -91,26 +92,42 @@
       }
 
       const abs = u => new URL(u, location.href).href
-      const needUrl = (type, url) => {
-        if (!url) throw new Error(`${type} layer needs url or path`)
-        return abs(url)
+      const needUrl = a => {
+        if (a.missing) throw new Error(a.missing)
+        if (!a.url) throw new Error(`${a.type} layer needs url, path or data`)
+        return abs(a.url)
       }
-      const byUrl = Ctor => a => new Ctor({ url: needUrl(a.type, a.url) })
+      const byUrl = m => async a => new (await use(m))({ url: needUrl(a) })
       const LAYER_TYPES = {
-        feature: byUrl(FeatureLayer),
-        geojson: byUrl(GeoJSONLayer),
-        tile: byUrl(TileLayer),
-        'vector-tile': byUrl(VectorTileLayer),
-        imagery: byUrl(ImageryLayer),
-        parquet: a => {
+        feature: byUrl('FeatureLayer'),
+        geojson: byUrl('GeoJSONLayer'),
+        csv: byUrl('CSVLayer'),
+        tile: byUrl('TileLayer'),
+        'vector-tile': byUrl('VectorTileLayer'),
+        imagery: byUrl('ImageryLayer'),
+        'map-image': byUrl('MapImageLayer'),
+        parquet: async a => {
+          if (a.missing) throw new Error(a.missing)
           const urls = [a.url, ...(a.urls ?? [])].filter(Boolean).map(abs)
           if (!urls.length) throw new Error('parquet layer needs url, urls or path')
+          const [ParquetLayer, ParquetFilesData] = await Promise.all([use('ParquetLayer'), use('support/ParquetFilesData')])
           return new ParquetLayer({ data: new ParquetFilesData({ urls }) })
         },
-        'portal-item': a => {
+        'portal-item': async a => {
           if (!a.itemId) throw new Error('portal-item needs itemId')
-          return Layer.fromPortalItem({ portalItem: { id: a.itemId } })
+          return (await use('Layer')).fromPortalItem({ portalItem: { id: a.itemId } })
         },
+      }
+
+      // Properties add_layer and update_layer set; one a layer does not have is an error, not a silent no-op.
+      const PROPERTIES = ['title', 'opacity', 'visible', 'renderer', 'definitionExpression', 'labelingInfo']
+      function setProperties(layer, args) {
+        for (const key of PROPERTIES) {
+          if (args[key] === undefined) continue
+          if (!(key in layer)) throw new Error(`a ${layer.type} layer has no ${key}`)
+          layer[key] = args[key]
+        }
+        if (args.labelingInfo !== undefined && 'labelsVisible' in layer) layer.labelsVisible = true
       }
 
       // fullExtent is the whole service; queryExtent honours definitionExpression (feature, GeoJSON, Parquet).
@@ -130,9 +147,15 @@
       }
 
       const ops = {
-        async add_graphic({ geometry, symbol, attributes, popupTitle, layer = 'Graphics' }) {
+        // Sent first to a page that does not have this log yet.
+        async reset() {
+          map.removeAll()
+          map.basemap = 'osm'
+        },
+
+        async add_graphic({ geometry, symbol, attributes, popupTitle, layer = 'Graphics' }, { layerId }) {
           const geom = toGeometry(geometry)
-          const target = graphicsLayer(layer)
+          const target = graphicsLayer(layer, layerId)
           let popupTemplate
           if (popupTitle || attributes) {
             popupTemplate = { title: popupTitle ?? layer }
@@ -147,23 +170,28 @@
           return { layerId: target.id, graphics: target.graphics.length }
         },
 
-        async add_layer(args) {
+        async add_layer(args, { layerId, replay }) {
           const make = LAYER_TYPES[args.type]
           if (!make) throw new Error(`unknown layer type: ${args.type}`)
           const layer = await make(args)
-          const { title, renderer, definitionExpression, opacity, zoomTo = true } = args
-          if (title) layer.title = title
-          if (opacity != null) layer.opacity = opacity
-          if (definitionExpression && 'definitionExpression' in layer) layer.definitionExpression = definitionExpression
-          if (renderer && 'renderer' in layer) layer.renderer = renderer
+          layer.id = layerId
           try {
             await layer.load()
           } catch (err) {
             throw new Error(`layer failed to load: ${err.message}`)
           }
+          setProperties(layer, args)
+          // A click on a feature shows its attributes even when Claude gave no popup.
+          if (!layer.popupTemplate && layer.createPopupTemplate) layer.popupTemplate = layer.createPopupTemplate()
           map.add(layer)
-          if (zoomTo) await view.goTo(await extentOf(layer)).catch(() => {})
+          if (args.zoomTo !== false && !replay) await view.goTo(await extentOf(layer)).catch(() => {})
           return { layerId: layer.id, title: layer.title, type: layer.type }
+        },
+
+        async update_layer({ id, ...args }) {
+          const layer = findLayer(id)
+          setProperties(layer, args)
+          return { layerId: layer.id }
         },
 
         async remove_layer({ id }) {
@@ -180,31 +208,45 @@
           return { cleared: targets.length }
         },
 
-        async go_to({ center, zoom, layerId }) {
-          if (layerId) {
-            await view.goTo(await extentOf(findLayer(layerId)))
-          } else {
-            await view.goTo({ ...(center ? { center } : {}), ...(zoom != null ? { zoom } : {}) })
-          }
+        async set_basemap({ basemap }) {
+          map.basemap = basemap
+          if (!map.basemap) throw new Error(`unknown basemap "${basemap}"`)
+          await map.basemap.load()
+          return { basemap }
+        },
+
+        async go_to({ center, zoom, layerId }, { replay }) {
+          const target = layerId ? await extentOf(findLayer(layerId)) : { ...(center ? { center } : {}), ...(zoom != null ? { zoom } : {}) }
+          await view.goTo(target, { animate: !replay })
           return {}
+        },
+
+        async screenshot() {
+          const { dataUrl } = await view.takeScreenshot({ format: 'png' })
+          return { dataUrl, width: view.width, height: view.height }
         },
       }
 
       const post = (path, body) =>
         fetch(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ...body, state: snapshot() }) })
 
-      const events = new EventSource('/events')
-      events.onopen = () => { badge.className = 'live'; badge.textContent = 'Claude: connected'; post('/state', {}) }
-      events.onerror = () => { badge.className = 'down'; badge.textContent = 'Claude: disconnected' }
-      events.onmessage = async msg => {
-        const { id, op, args } = JSON.parse(msg.data)
+      // One command at a time, in the order sent: a replay must rebuild the map exactly.
+      let queue = Promise.resolve()
+      async function handle({ id, op, args, layerId, replay }) {
         try {
           if (!ops[op]) throw new Error(`unknown op: ${op}`)
-          await post('/ack', { id, ok: true, result: await ops[op](args) })
+          const result = await ops[op](args ?? {}, { layerId, replay })
+          if (id != null) await post('/ack', { id, ok: true, result })
         } catch (err) {
-          await post('/ack', { id, ok: false, error: String(err?.message ?? err) })
+          if (replay) console.warn(`replay of ${op} failed:`, err)
+          if (id != null) await post('/ack', { id, ok: false, error: String(err?.message ?? err) })
         }
       }
+
+      const events = new EventSource('/events')
+      events.onopen = () => { badge.className = 'live'; badge.textContent = 'Claude: connected' }
+      events.onerror = () => { badge.className = 'down'; badge.textContent = 'Claude: disconnected' }
+      events.onmessage = msg => { const command = JSON.parse(msg.data); queue = queue.then(() => handle(command)) }
       // Tell the bridge when the user pans or changes layers by hand.
       let timer
       const report = () => { clearTimeout(timer); timer = setTimeout(() => post('/state', {}), 500) }

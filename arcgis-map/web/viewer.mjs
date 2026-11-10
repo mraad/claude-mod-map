@@ -78,6 +78,13 @@ export function toMouse(event, size, last = {}) {
   return null
 }
 
+/** Wheel ticks from the pane (`by`, negative toward the top: zoom in) at x, y (0-1) to a CDP mouseWheel event. */
+export function toWheel(event, size) {
+  const x = Math.min(Math.max(event.x ?? 0.5, 0), 1) * size.width
+  const y = Math.min(Math.max(event.y ?? 0.5, 0), 1) * size.height
+  return { type: 'mouseWheel', x, y, deltaX: 0, deltaY: event.by * 100 }
+}
+
 /** One key from the pane to the CDP Input.dispatchKeyEvent params for keyDown and keyUp. */
 export function toKeys(event) {
   const special = SPECIAL_KEYS[event.key]
@@ -215,6 +222,8 @@ export async function startViewer({ url, columns, rows, onFrame, onExit = () => 
             if (event.kind === 'pointer') {
               const params = toMouse(event, size, last)
               if (params) await page('Input.dispatchMouseEvent', params)
+            } else if (event.kind === 'wheel' && Number.isFinite(event.by)) {
+              await page('Input.dispatchMouseEvent', toWheel(event, size))
             } else if (event.kind === 'key') {
               for (const params of toKeys(event)) await page('Input.dispatchKeyEvent', params)
             }

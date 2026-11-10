@@ -1,26 +1,62 @@
-// Bridge between the arcgis-map mod and the browser tab that holds the map.
-// Mod: POST /cmd {op, args} -> waits for the tab's answer; POST /files {path} -> {url}.
-// Tab: GET /events (SSE), POST /ack (a command's answer), POST /state (manual pan or layer change).
-// Pane: POST /input {size} starts headless Chrome on this page (viewer.mjs); {events} are its mouse and keys.
+// Bridge between the arcgis-map mod and the pages that show the map (browser window, pane, any tab).
+// Mod: POST /cmd {op, args} -> waits for a page's answer. A local `path` (or inline GeoJSON `data`) is
+// served here under a random URL; only such files are served, never an arbitrary path.
+// Page: GET /events (SSE), POST /ack (a command's answer), POST /state (manual pan or layer change).
+// Pane: POST /input {size} starts headless Chrome on this page (viewer.mjs); {events} are its mouse, keys, wheel.
 // Stdout lines the mod reads: `STATE {...}` per map change, `FRAME <path> <generation>` per pane picture,
 // `VIEWER down` (Chrome died: send the size again to restart), `VIEWER failed <why>` (gave up), `VIEWER idle`.
+//
+// Every page shows the same map: the bridge keeps a log of the commands that change it and replays the log
+// to each page that connects (SSE ids `<epoch>:<n>`, so a reconnecting page gets only what it missed).
+// With ARCGIS_MAP_SESSION set, the log and the view are saved there, so a mod reload or `--resume` gets the map back.
 import { createServer } from 'node:http'
-import { createReadStream, readFileSync, statSync } from 'node:fs'
+import { createReadStream, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
-import { basename } from 'node:path'
+import { homedir, tmpdir } from 'node:os'
+import { basename, join } from 'node:path'
 import { text } from 'node:stream/consumers'
 
 import { startViewer } from './viewer.mjs'
 
 const PORT = Number(process.argv[2] ?? 8765)
 const PAGE = readFileSync(new URL('./index.html', import.meta.url))
-const TIMEOUT_MS = 15000
+// A large local file or a slow service can take a while to load; the rest is quick.
+const TIMEOUT_MS = { add_layer: 60000, screenshot: 30000 }
+const DEFAULT_TIMEOUT_MS = 15000
+// Commands that do not change what the map holds: never logged, never replayed.
+const READ_ONLY = new Set(['go_to', 'screenshot'])
+
+// The mod passes its session id: the map of each session is saved in its own folder.
+const SESSION = process.env.ARCGIS_MAP_SESSION?.replace(/[^\w-]/g, '')
+const HOME = SESSION && join(homedir(), '.claude', 'arcgis-map', 'sessions', SESSION)
+const SAVE = HOME && join(HOME, 'map.json')
+// Inline GeoJSON and screenshots are written here: the session folder, or a temp folder when nothing is saved.
+const DATA = HOME ? join(HOME, 'data') : mkdtempSync(join(tmpdir(), 'arcgis-map-data-'))
+mkdirSync(DATA, { recursive: true })
+
+function load() {
+  try {
+    const saved = JSON.parse(readFileSync(SAVE, 'utf8'))
+    if (typeof saved.epoch === 'string' && Array.isArray(saved.log)) return saved
+  } catch {}
+  return { epoch: randomUUID().slice(0, 8), log: [], view: {} }
+}
+// shortcut: the log only grows (a removed layer stays as add + remove); compact it if replays get slow.
+const saved = SAVE ? load() : { epoch: randomUUID().slice(0, 8), log: [], view: {} }
+const { epoch } = saved
+let log = saved.log
+let nextId = Math.max(0, ...log.map(entry => entry.id)) + 1
+
+const save = () => {
+  if (!SAVE) return
+  writeFileSync(`${SAVE}.tmp`, JSON.stringify({ epoch, log, view: { center: state.center, zoom: state.zoom } }))
+  renameSync(`${SAVE}.tmp`, SAVE)
+}
 
 const tabs = new Set()
 const pending = new Map()
-let state = { layers: [] }
-let nextId = 1
-// Local files the mod asked to show, by key and by path; only these are served, never an arbitrary path.
+let state = { layers: [], ...saved.view }
+// Local files the mod asked to show, by key and by path.
 const files = new Map()
 const fileKeys = new Map()
 // The pane's headless Chrome: started by the first size the pane reports, stopped when the pane goes quiet
@@ -56,6 +92,35 @@ function startPaneViewer(size) {
   })
 }
 
+/** The URL a page reads a registered local file from; throws if it is not a readable file. */
+function serve(path) {
+  if (typeof path !== 'string' || !statSync(path).isFile()) throw new Error(`${path} is not a file`)
+  let key = fileKeys.get(path)
+  if (!key) {
+    key = randomUUID() // unguessable: a file URL is its only key
+    files.set(key, path)
+    fileKeys.set(path, key)
+  }
+  return `/files/${key}/${encodeURIComponent(basename(path))}`
+}
+
+// The log keeps local paths (file URLs change per bridge); a page gets URLs.
+function toPage(entry, replay) {
+  let { args } = entry
+  if (typeof args.path === 'string') {
+    const { path, ...rest } = args
+    try {
+      args = { ...rest, url: serve(path) }
+    } catch (err) {
+      args = { ...rest, missing: err.message } // the page reports it; a replay goes on without it
+    }
+  }
+  return { id: entry.id, op: entry.op, args, layerId: `L${entry.id}`, ...(replay ? { replay: true } : {}) }
+}
+
+const sse = (res, message, withId = true) =>
+  res.write(`${withId && message.id != null ? `id: ${epoch}:${message.id}\n` : ''}data: ${JSON.stringify(message)}\n\n`)
+
 const body = async req => {
   const raw = await text(req)
   return raw ? JSON.parse(raw) : {}
@@ -71,9 +136,23 @@ const publish = () => console.log(`STATE ${JSON.stringify(snapshot())}`)
 
 const HOST = `127.0.0.1:${PORT}`
 // The mod's per-session secret: the Host/Origin guard stops web pages, not other local programs.
-// Set, it is required on the control endpoints (/cmd, /files, /input) that only the mod calls.
+// Set, it is required on the control endpoints (/cmd, /input) that only the mod calls.
 const TOKEN = process.env.ARCGIS_MAP_TOKEN
-const CONTROL = new Set(['/cmd', '/files', '/input'])
+const CONTROL = new Set(['/cmd', '/input'])
+
+// Inline GeoJSON becomes a file in the data folder, so the log stays small and holds a path like any other.
+function prepare(cmd, id) {
+  const args = { ...(cmd.args ?? {}) }
+  if (args.data !== undefined) {
+    if (cmd.op !== 'add_layer' || args.type !== 'geojson') throw new Error('data is for add_layer with type "geojson" only')
+    const path = join(DATA, `layer-${epoch}-${id}.geojson`)
+    writeFileSync(path, typeof args.data === 'string' ? args.data : JSON.stringify(args.data))
+    delete args.data
+    args.path = path
+  }
+  if (args.path !== undefined) serve(args.path) // refuse a bad path now, not on the page
+  return { id, op: cmd.op, args }
+}
 
 const server = createServer(async (req, res) => {
   try {
@@ -82,7 +161,10 @@ const server = createServer(async (req, res) => {
       return json(res, 403, { ok: false, error: `only http://${HOST}/ may call the bridge` })
     }
     if (TOKEN && req.method === 'POST' && CONTROL.has(req.url) && req.headers['x-arcgis-map-token'] !== TOKEN) {
-      return json(res, 403, { ok: false, error: 'missing or wrong bridge token' })
+      return json(res, 403, {
+        ok: false,
+        error: `wrong bridge token: the map bridge on port ${PORT} belongs to another Claude Code session. Close that session's map, then reload this one.`,
+      })
     }
     if (req.method === 'GET' && req.url.split('?')[0] === '/') {
       res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
@@ -95,7 +177,14 @@ const server = createServer(async (req, res) => {
         connection: 'keep-alive',
       })
       res.write(': connected\n\n')
+      // A page that reconnects to this log gets only what it missed; any other page starts over.
+      const [lastEpoch, lastN] = String(req.headers['last-event-id'] ?? '').split(':')
+      const isKnown = lastEpoch === epoch && Number(lastN) < nextId
+      if (!isKnown) sse(res, { op: 'reset' }, false)
+      for (const entry of log) if (!isKnown || entry.id > Number(lastN)) sse(res, toPage(entry, true))
+      if (!isKnown && state.center) sse(res, { op: 'go_to', args: { center: state.center, zoom: state.zoom }, replay: true }, false)
       tabs.add(res)
+      publish()
       req.on('close', () => {
         tabs.delete(res)
         publish()
@@ -123,6 +212,7 @@ const server = createServer(async (req, res) => {
     if (req.method === 'POST' && req.url === '/state') {
       state = (await body(req)).state ?? state
       publish()
+      save()
       return json(res, 200, { ok: true })
     }
     if (req.method === 'POST' && req.url === '/ack') {
@@ -131,21 +221,6 @@ const server = createServer(async (req, res) => {
       pending.get(ack.id)?.(ack)
       publish()
       return json(res, 200, { ok: true })
-    }
-    if (req.method === 'POST' && req.url === '/files') {
-      const { path } = await body(req)
-      try {
-        if (typeof path !== 'string' || !statSync(path).isFile()) throw new Error('not a file')
-      } catch (err) {
-        return json(res, 400, { ok: false, error: `cannot read ${path}: ${err.message}` })
-      }
-      let key = fileKeys.get(path)
-      if (!key) {
-        key = randomUUID() // unguessable: a file URL is its only key
-        files.set(key, path)
-        fileKeys.set(path, key)
-      }
-      return json(res, 200, { ok: true, url: `/files/${key}/${encodeURIComponent(basename(path))}` })
     }
     if (req.method === 'POST' && req.url === '/input') {
       const { size, events } = await body(req)
@@ -166,19 +241,51 @@ const server = createServer(async (req, res) => {
       if (tabs.size === 0) {
         return json(res, 503, {
           ok: false,
-          error: `No map tab is open. Open http://127.0.0.1:${PORT}/ (or run /map).`,
+          error: `No map page is open. Run /map (pane) or /map browser, or open http://${HOST}/.`,
           state: snapshot(),
         })
       }
-      const id = nextId++
+      let entry
+      try {
+        entry = prepare(cmd, nextId++)
+      } catch (err) {
+        return json(res, 400, { ok: false, error: err.message, state: snapshot() })
+      }
+      const isLogged = !READ_ONLY.has(cmd.op)
+      // Logged before it is sent, so a page that connects meanwhile gets it in its replay.
+      if (isLogged) log.push(entry)
+      const expected = tabs.size
+      const timeout = TIMEOUT_MS[cmd.op] ?? DEFAULT_TIMEOUT_MS
+      // The first page that succeeds answers; an error answers only when every page failed.
       const ack = await new Promise(resolve => {
-        const settle = value => pending.delete(id) && resolve(value)
-        pending.set(id, settle)
-        setTimeout(() => settle({ ok: false, error: `map tab did not answer in ${TIMEOUT_MS} ms; it may still finish, so call map_state before retrying` }), TIMEOUT_MS)
-        const line = `data: ${JSON.stringify({ id, op: cmd.op, args: cmd.args ?? {} })}\n\n`
-        for (const tab of tabs) tab.write(line)
+        let failures = 0
+        let firstError
+        const settle = value => {
+          clearTimeout(timer)
+          pending.delete(entry.id)
+          resolve(value)
+        }
+        pending.set(entry.id, answer => {
+          if (answer.ok) return settle(answer)
+          firstError ??= answer
+          if (++failures >= expected) settle(firstError)
+        })
+        const timer = setTimeout(
+          () => settle(firstError ?? { ok: false, error: `the map did not answer in ${timeout} ms; it may still finish, so call map_state before retrying` }),
+          timeout,
+        )
+        const message = toPage(entry, false)
+        for (const tab of tabs) sse(tab, message)
       })
-      return json(res, ack.ok ? 200 : 422, { ...ack, state: snapshot() })
+      if (isLogged && !ack.ok) log = log.filter(e => e !== entry)
+      if (isLogged) save()
+      let { result } = ack
+      if (ack.ok && cmd.op === 'screenshot' && typeof result?.dataUrl === 'string') {
+        const path = join(DATA, `map-${new Date().toISOString().replace(/[:.]/g, '-')}.png`)
+        writeFileSync(path, Buffer.from(result.dataUrl.split(',')[1] ?? '', 'base64'))
+        result = { path, width: result.width, height: result.height }
+      }
+      return json(res, ack.ok ? 200 : 422, { ok: ack.ok, error: ack.error, result, state: snapshot() })
     }
     json(res, 404, { ok: false, error: 'not found' })
   } catch (err) {
@@ -190,11 +297,14 @@ const server = createServer(async (req, res) => {
 let tries = 0
 server.on('error', err => {
   if (err.code === 'EADDRINUSE' && tries++ < 20) return setTimeout(() => server.listen(PORT, '127.0.0.1'), 250)
-  console.error(`bridge: ${err.message}`)
-  process.exit(1)
+  // The mod shows this line in the status line and in tool errors.
+  const why = err.code === 'EADDRINUSE' ? `port ${PORT} is held by another program (another Claude Code session's map?)` : err.message
+  // Exit after the write: a pipe write is asynchronous on macOS.
+  if (!HOME) rmSync(DATA, { recursive: true, force: true })
+  process.stdout.write(`BRIDGE down ${why}\n`, () => process.exit(1))
 })
 server.listen(PORT, '127.0.0.1', () => {
-  console.log(`bridge: http://127.0.0.1:${PORT}/`)
+  console.log(`bridge: http://${HOST}/`)
   publish()
 })
 // A closed pane stops posting: free Chrome's 1-2 GB. Reopening the pane posts its size and starts it again.
@@ -212,6 +322,7 @@ setInterval(
 for (const signal of ['SIGTERM', 'SIGINT']) {
   process.on(signal, async () => {
     await (await viewer?.catch(() => undefined))?.close()
+    if (!HOME) rmSync(DATA, { recursive: true, force: true }) // nothing saved: the temp folder goes too
     process.exit(0)
   })
 }
