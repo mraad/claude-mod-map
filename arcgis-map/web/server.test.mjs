@@ -151,7 +151,7 @@ test('each page connect gets the version stamped on the served page, so a page w
       let text = ''
       res.on('data', chunk => {
         text += chunk
-        if (text.includes('event: version')) { req.destroy(); resolve(text) }
+        if (/event: version\ndata: .*\n\n/.test(text)) { req.destroy(); resolve(text) } // the whole event, not a chunk of it
       })
     })
     req.on('error', reject)

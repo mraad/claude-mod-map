@@ -147,6 +147,7 @@
           const { count, extent } = await layer.queryExtent()
           if (count > 0 && extent) return extent
         }
+        if (!layer.fullExtent) throw new Error(`layer "${layer.title ?? layer.id}" has no extent to go to`)
         return layer.fullExtent
       }
 
@@ -229,7 +230,8 @@
         // A basemap that fails (unknown id, Esri style without a key) leaves the previous one in place.
         // A basemap that fails (unknown id, Esri style without a key, too slow) leaves the previous one in place.
         async set_basemap({ basemap }) {
-          const tiles = KEYLESS[basemap]
+          if (typeof basemap !== 'string' || !basemap) throw new Error('basemap must be a non-empty string')
+          const tiles = Object.hasOwn(KEYLESS, basemap) ? KEYLESS[basemap] : undefined
           if (!tiles && basemap.includes('/') && !apiKey) {
             throw new Error(`"${basemap}" is an Esri basemap style and needs the page opened with ?apiKey=. Without a key use: osm, ${Object.keys(KEYLESS).join(', ')}.`)
           }
