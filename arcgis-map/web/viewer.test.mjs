@@ -2,7 +2,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { pixelSize, toKeys, toMouse } from './viewer.mjs'
+import { pixelSize, toKeys, toMouse, toWheel } from './viewer.mjs'
 
 const size = pixelSize(40, 20) // 400 x 400 px
 
@@ -45,4 +45,9 @@ test('keys: arrows and Enter by name, characters as text, other names ignored', 
     { type: 'keyUp', key: '+', modifiers: 0 },
   ])
   assert.deepEqual(toKeys({ key: 'f13' }), [])
+})
+
+test('wheel ticks zoom at the pointer, or the middle without one', () => {
+  assert.deepEqual(toWheel({ by: -1, x: 0.25, y: 0.5 }, size), { type: 'mouseWheel', x: 100, y: 200, deltaX: 0, deltaY: -100 })
+  assert.equal(toWheel({ by: 2 }, size).x, 200)
 })

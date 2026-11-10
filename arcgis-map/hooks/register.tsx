@@ -7,16 +7,20 @@ import type { MapFrame, MapStatus } from '../types'
 const PORT = 8765
 const BASE = `http://127.0.0.1:${PORT}`
 const PANE = 'arcgis-map'
+// The pane body: two header rows, then the map region.
+const HEADER_ROWS = 2
 // Proves to the bridge that a control request comes from this mod; new per load, like the bridge.
 const TOKEN = crypto.randomUUID()
 
 // Change the tag when MapStatus changes: it declines what an earlier version stored.
 const status = atom({ plugin: 'arcgis-map', key: 'status' } as const, { isConnected: false, layers: [] } as MapStatus, {
-  shape: 'status-1',
+  shape: 'status-2',
 })
 const frame = atom({ plugin: 'arcgis-map', key: 'frame' } as const, { path: '', generation: 0 } as MapFrame, { shape: 'frame-2' })
 // What the bridge already got from the pane's viewer-client: its instance id, last event seq and size.
 let seen = { id: '', seq: 0, size: '' }
+// Why the bridge is not running (it exited, e.g. another session holds the port); '' while it runs.
+let bridgeDown = ''
 
 const GEOMETRY = {
   type: 'object',
@@ -24,6 +28,14 @@ const GEOMETRY = {
   properties: { type: { type: 'string' }, coordinates: { type: 'array' } },
   required: ['type', 'coordinates'],
 }
+
+const LAYER_PROPERTIES = {
+  title: { type: 'string' },
+  renderer: { type: 'object', description: 'ArcGIS autocast renderer JSON (simple, unique-value, class-breaks, heatmap...).' },
+  definitionExpression: { type: 'string', description: 'SQL where clause (feature, GeoJSON, CSV, Parquet layers).' },
+  labelingInfo: { type: 'array', items: { type: 'object' }, description: 'ArcGIS autocast LabelClass JSON list; turns labels on.' },
+  opacity: { type: 'number' },
+} as const
 
 const TOOLS = [
   {
@@ -49,22 +61,29 @@ const TOOLS = [
   {
     name: 'add_layer',
     description:
-      'Add a map layer to the live map, then zoom to it: a service URL, a GeoJSON or GeoParquet file (URL or local path), or an ArcGIS Online portal item id. Answers the new layer id or the load error.',
+      'Add a map layer to the live map, then zoom to it: a service URL, a GeoJSON, CSV or GeoParquet file (URL or local path), inline GeoJSON (data), or an ArcGIS Online portal item id. Use data for analysis results: one call for all features. Features get a popup of their attributes. Answers the new layer id or the load error.',
     inputSchema: {
       type: 'object',
       properties: {
-        type: { type: 'string', enum: ['feature', 'geojson', 'parquet', 'tile', 'vector-tile', 'imagery', 'portal-item'] },
-        url: { type: 'string', description: 'Service, GeoJSON or GeoParquet URL (all types except portal-item).' },
+        type: { type: 'string', enum: ['feature', 'geojson', 'csv', 'parquet', 'tile', 'vector-tile', 'imagery', 'map-image', 'portal-item'] },
+        url: { type: 'string', description: 'Service or file URL (all types except portal-item).' },
         urls: { type: 'array', items: { type: 'string' }, description: 'More GeoParquet file URLs (parquet only).' },
-        path: { type: 'string', description: 'Absolute local path of a .geojson or .parquet file; served to the map in place of url.' },
+        path: { type: 'string', description: 'Absolute local path of a .geojson, .csv or .parquet file; served to the map in place of url.' },
+        data: { type: 'object', description: 'Inline GeoJSON FeatureCollection in WGS84 (geojson only), in place of url or path.' },
         itemId: { type: 'string', description: 'Portal item id (portal-item only).' },
-        title: { type: 'string' },
-        renderer: { type: 'object', description: 'ArcGIS autocast renderer JSON.' },
-        definitionExpression: { type: 'string', description: 'SQL where clause (feature layers).' },
-        opacity: { type: 'number' },
+        ...LAYER_PROPERTIES,
         zoomTo: { type: 'boolean', description: 'Default true.' },
       },
       required: ['type'],
+    },
+  },
+  {
+    name: 'update_layer',
+    description: 'Change a layer on the live map by id or title: symbology (renderer), filter, labels, opacity, visibility or title. No reload of its data.',
+    inputSchema: {
+      type: 'object',
+      properties: { id: { type: 'string' }, ...LAYER_PROPERTIES, visible: { type: 'boolean' } },
+      required: ['id'],
     },
   },
   {
@@ -88,6 +107,17 @@ const TOOLS = [
         layerId: { type: 'string' },
       },
     },
+  },
+  {
+    name: 'set_basemap',
+    description:
+      'Change the basemap of the live map. "osm" needs no key; Esri styles (e.g. "arcgis/topographic", "arcgis/imagery", "arcgis/dark-gray") need the page opened with ?apiKey=.',
+    inputSchema: { type: 'object', properties: { basemap: { type: 'string' } }, required: ['basemap'] },
+  },
+  {
+    name: 'screenshot',
+    description: 'Save a PNG of the live map as it shows now and answer its path. Read the file to check the map, or hand it to the user.',
+    inputSchema: { type: 'object', properties: {} },
   },
   {
     name: 'map_state',
@@ -116,19 +146,22 @@ async function call($: EngineInterface, path: string, body?: unknown): Promise<R
   }
 }
 
-// Sends one tool call to the map tab; map_state is answered by the bridge alone.
+// Sends one tool call to the map pages; map_state is answered by the bridge alone.
 async function run($: EngineInterface, op: string, args: Record<string, unknown>): Promise<Reply> {
+  if (bridgeDown) return { ok: false, error: `the map bridge is not running: ${bridgeDown}` }
   if (op === 'map_state') {
     const reply = await call($, '/state')
     return 'error' in reply ? reply : { ok: true, state: reply as unknown as MapStatus }
   }
-  if (typeof args.path === 'string') {
-    const file = await call($, '/files', { path: args.path })
-    if (!file.ok) return file
-    const { path: _path, ...rest } = args
-    args = { ...rest, url: file.url }
-  }
   return call($, '/cmd', { op, args })
+}
+
+// The bridge could not start (another session holds the port): say so in the status line and in tool errors.
+async function stopped($: EngineInterface, why: string) {
+  bridgeDown = why
+  await update($, status, () => ({ isConnected: false, layers: [] }))
+  $.ui.status('map: off')
+  $.ui.log(`arcgis-map: the map bridge stopped: ${why}`)
 }
 
 // The first frame (or a new file) redraws the pane with the Image; later ones only swap its picture.
@@ -176,8 +209,11 @@ export const register: Register = on => {
     await update($, frame, () => ({ path: '', generation: 0 }))
     // The bridge lives as long as this module; a reload kills and restarts it.
     // It prints one `STATE {...}` line per map change: the pane and status line follow those.
+    // The map is saved per session, so a mod reload or `--resume` shows it again.
+    const session = await $.session.id().catch(() => '')
+    bridgeDown = ''
     void (async () => {
-      const bridge = $.process.spawn({ argv: ['node', `${$.plugin.root}/web/server.mjs`, String(PORT)], env: { ARCGIS_MAP_TOKEN: TOKEN } })
+      const bridge = $.process.spawn({ argv: ['node', `${$.plugin.root}/web/server.mjs`, String(PORT)], env: { ARCGIS_MAP_TOKEN: TOKEN, ARCGIS_MAP_SESSION: session } })
       let buffer = ''
       for await (const { stream, text } of bridge) {
         if (stream !== 'stdout') {
@@ -192,6 +228,7 @@ export const register: Register = on => {
             if (line.startsWith('STATE ')) await setStatus($, JSON.parse(line.slice(6)) as MapStatus)
             else if (line.startsWith('FRAME ')) await showFrame($, line)
             else if (line.startsWith('VIEWER ')) await viewerChanged($, line)
+            else if (line.startsWith('BRIDGE down ')) await stopped($, line.slice(12))
             else if (line.trim()) $.ui.log(line, { to: 'debug' })
           } catch (err) {
             $.ui.log(`arcgis-map: bad bridge line skipped: ${String(err)}`, { to: 'debug' })
@@ -244,6 +281,17 @@ export const register: Register = on => {
     return {}
   })
 
+  // The wheel over the map zooms it at the pointer; the pane itself has nothing to scroll.
+  on('ui.scroll', { component: 'Pane', requestId: PANE }, async ($, e) => {
+    const size = seen.size ? (JSON.parse(seen.size) as { columns: number; rows: number }) : undefined
+    if (e.by && e.pointer && size) {
+      const x = (e.pointer.column + 0.5) / size.columns
+      const y = (e.pointer.row - HEADER_ROWS + 0.5) / size.rows
+      if (x >= 0 && x <= 1 && y >= 0 && y <= 1) await call($, '/input', { events: [{ kind: 'wheel', by: e.by, x, y }] })
+    }
+    return {}
+  }).catch(() => ({}))
+
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const s = await read($, status)
     const layers = s.layers.map(l => (l.count != null ? `${l.title} (${l.count})` : l.title)).join(' · ')
@@ -271,7 +319,7 @@ export const register: Register = on => {
     const { Client, Image } = $.ui.resolve(e)
     const picture = await read($, frame)
     const columns = Math.max(10, e.props.bodyColumns)
-    const rows = Math.max(4, e.props.scroll.bodyRows - 2)
+    const rows = Math.max(4, e.props.scroll.bodyRows - HEADER_ROWS)
 
     return (
       <Box flexDirection="column">

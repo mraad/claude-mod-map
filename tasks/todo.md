@@ -1,21 +1,31 @@
-# Embedded map pane, version 2 (mouse)
+# 0.1.2: one map for all views, analyst tools
 
-Goal: the ArcGIS map shows inside the Claude Code pane (right side) and takes mouse and keys.
+Branch `fix/analyst-mapping`. From the 2026-11-10 review.
 
-Design (from the 2026-11-09 benchmark: Chrome + Metal GPU + raw CDP + screencast):
-- Bridge starts headless Chrome on its own page (raw CDP over `--remote-debugging-pipe`, no dependency) when the pane first reports its size.
-- Chrome screencasts PNG frames; bridge writes each to one file (atomic rename) and prints `FRAME <path> <gen>`.
-- Pane: a `Client` (empty, takes pointer + keys) with the `Image` absolutely on top of it; mod swaps frames with `$.ui.blit`.
-- Client posts pointer/key events (with sequence numbers, so a replaced post loses nothing) -> mod `ui.message` -> bridge `POST /input` -> CDP `Input.dispatchMouseEvent` / `dispatchKeyEvent`.
-- No wheel in the pointer API: zoom by double-click, the map's +/- buttons, or `+`/`-` keys after a click.
+Bugs:
+- [x] Bridge keeps a log of map changes; a new or reconnected page replays it (SSE `id:` + `Last-Event-ID`, epoch for a new log)
+- [x] Bridge assigns layer ids, so ids match in pane and browser
+- [x] Page runs commands one at a time, in order
+- [x] The answer is the first ok page, or the first error when all pages failed
+- [x] Log + view saved per session (`ARCGIS_MAP_HOME`): mod reload and `--resume` restore the map; local paths stored, not file URLs
+- [x] Bridge that cannot get port 8765: status line and tools say so; token error names another session
+- [x] `renderer` / `definitionExpression` on a layer without them: error, not silence
+- [x] `add_layer` timeout 60 s
 
-Steps:
-- [x] `web/viewer.mjs`: launch Chrome, screencast to file, resize, input mapping (pure helpers exported)
-- [x] `web/server.mjs`: `POST /input` (size starts the viewer; events go to it), FRAME lines, stop Chrome on exit
-- [x] `web/index.html`: `?embedded=1` hides badge and layer list
-- [x] `hooks/viewer-client.ts`: surface module (pointer, keys, size, sequence numbers)
-- [x] `hooks/register.tsx`: pane with Client + Image, `ui.message` relay, FRAME -> atom / blit, `/map` stops opening a browser
-- [x] `types/index.d.ts`: frame state
-- [x] Tests: viewer helpers + `/input` (node:test), mod relay/frame/pane (claude plugin test)
-- [x] Live check: headless run, drag pans the map, frames land in the file
-- [ ] Load into the session; person checks the pane by hand
+Features:
+- [x] `add_layer` `data`: inline GeoJSON (bridge writes it to a file)
+- [x] `screenshot` tool: PNG file path
+- [x] `update_layer` tool: title, renderer, definitionExpression, opacity, visible, labelingInfo
+- [x] Legend; default popups for layers without a template
+- [x] Wheel zoom in the pane (`ui.scroll` -> CDP `mouseWheel`)
+- [x] `csv` and `map-image` layer types
+- [x] `set_basemap` tool
+
+Simplify / optimize:
+- [x] Layer classes imported on first use
+- [x] File registration moves into the bridge (`POST /files` goes)
+- [x] Pane at deviceScaleFactor 2: measured, no gain (headless screencast stays 800x600), kept at 1
+
+Finish:
+- [x] Version 0.1.1; README, CLAUDE.md, docs/index.html
+- [x] Tests: node, plugin test, tsc, validate; live check in Chrome

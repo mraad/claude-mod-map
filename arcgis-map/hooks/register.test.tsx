@@ -44,23 +44,21 @@ test('add_graphic sends only its own arguments to the bridge and answers the map
   expect(JSON.parse(String(ran.result))).toEqual({ result: { layerId: 'g1', graphics: 1 }, map: STATE })
 })
 
-test('add_layer with a local path registers the file, then sends its URL', async ($, on) => {
+test('add_layer passes a local path and inline data to the bridge, which serves them', async ($, on) => {
   const posted: { url: string; body?: string }[] = []
   on('http.fetch', (_, e) => {
     posted.push({ url: e.url, body: bodyText(e.init?.body) })
-    return e.url.endsWith('/files')
-      ? reply({ ok: true, url: '/files/1/sites.parquet' })
-      : reply({ ok: true, result: { layerId: 'p1' }, state: STATE })
+    return reply({ ok: true, result: { layerId: 'L1' }, state: STATE })
   })
   on('tool.call', () => ({ result: {} }))
 
   await $.tool.call({ tool: 'mcp__arcgis-map__add_layer', type: 'parquet', path: '/data/sites.parquet' })
+  const data = { type: 'FeatureCollection', features: [] }
+  await $.tool.call({ tool: 'mcp__arcgis-map__add_layer', type: 'geojson', data, labelingInfo: [{ labelExpressionInfo: { expression: '$feature.name' } }] })
 
-  expect(JSON.parse(posted[0]?.body ?? '{}')).toEqual({ path: '/data/sites.parquet' })
-  expect(JSON.parse(posted[1]?.body ?? '{}')).toEqual({
-    op: 'add_layer',
-    args: { type: 'parquet', url: '/files/1/sites.parquet' },
-  })
+  expect(posted.map(p => p.url)).toEqual(['http://127.0.0.1:8765/cmd', 'http://127.0.0.1:8765/cmd'])
+  expect(JSON.parse(posted[0]?.body ?? '{}')).toEqual({ op: 'add_layer', args: { type: 'parquet', path: '/data/sites.parquet' } })
+  expect(JSON.parse(posted[1]?.body ?? '{}').args).toEqual({ type: 'geojson', data, labelingInfo: [{ labelExpressionInfo: { expression: '$feature.name' } }] })
 })
 
 test('map_state reads the bridge, not the tab', async ($, on) => {
@@ -117,6 +115,33 @@ test('the pane follows the STATE lines the bridge prints, past stderr and a bad 
     expect((await ui.find({ type: 'Text', text: /^Graphics \(1\)$/ }))?.text).toBe('Graphics (1)')
     await ui.unmount()
   }
+})
+
+test('the bridge gets the session id; when it cannot start, the status line and every tool say why', async ($, on) => {
+  const spawned: Record<string, string>[] = []
+  const statuses: string[] = []
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('session.id', () => ({ value: 'abc-123' }))
+  on('tool.register', (_, e) => ({ value: { tool: `mcp__arcgis-map__${e.name}` } }))
+  on('command.register', () => ({ value: { command: 'map' } }))
+  on('ui.status', (_, e) => {
+    statuses.push(e.text ?? '')
+    return { value: undefined }
+  })
+  on('tool.call', () => ({ result: {} }))
+  on('process.spawn', async function* (_, e) {
+    spawned.push({ ...e.env })
+    yield { stream: 'stdout' as const, text: "BRIDGE down port 8765 is held by another program (another Claude Code session's map?)\n" }
+    return { value: { code: 1, signal: null } }
+  })
+
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  let ran = await $.tool.call({ tool: 'mcp__arcgis-map__map_state' })
+  for (let i = 0; i < 100 && !ran.deny?.includes('not running'); i++) ran = await $.tool.call({ tool: 'mcp__arcgis-map__map_state' })
+
+  expect(spawned[0]).toMatchObject({ ARCGIS_MAP_SESSION: 'abc-123' })
+  expect(ran.deny).toBe("arcgis-map: the map bridge is not running: port 8765 is held by another program (another Claude Code session's map?)")
+  expect(statuses.at(-1)).toBe('map: off')
 })
 
 // The bridge's output for the frame tests: one STATE, then two pictures in the same file.
@@ -240,6 +265,22 @@ test('the pane Client sends a heartbeat every 30 s, so the bridge keeps Chrome w
   const before = calls
   await ui.advance(30000)
   expect(calls).toBe(before + 1)
+  await ui.unmount()
+})
+
+test('the wheel over the pane zooms the map instead of scrolling the pane', async ($, on) => {
+  const inputs: unknown[] = []
+  on('http.fetch', (_, e) => {
+    if (e.url.endsWith('/input')) inputs.push(JSON.parse(bodyText(e.init?.body)))
+    return reply({ ok: true })
+  })
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.resize({ columns: 40, rows: 18, in: 'map' })
+  // A wheel tick up over the map region's cell (9, 11): body row 11 is region row 9, under the 2 header rows.
+  const wheel = { component: 'Pane', requestId: 'arcgis-map', offset: 0, by: -1, bodyRows: 20, contentRows: 20, origin: { kind: 'person' }, pointer: { column: 9, row: 11 } }
+  const result = await $.ui.scroll(wheel as never)
+  expect(result).toEqual({})
+  expect(inputs.at(-1)).toEqual({ events: [{ kind: 'wheel', by: -1, x: 9.5 / 40, y: 9.5 / 18 }] })
   await ui.unmount()
 })
 

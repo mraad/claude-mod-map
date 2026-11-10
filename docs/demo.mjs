@@ -3,14 +3,8 @@ import puppeteer from 'puppeteer-core'
 
 const BASE = 'http://127.0.0.1:8765'
 const DIR = new URL('.', import.meta.url).pathname
-const post = (path, body) => fetch(`${BASE}${path}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
 const send = async (op, args = {}) => {
   if (op === 'map_state') return { state: await (await fetch(`${BASE}/state`)).json() }
-  if (args.path) {
-    const { url } = await (await post('/files', { path: args.path })).json()
-    const { path, ...rest } = args
-    args = { ...rest, url }
-  }
   const res = await fetch(`${BASE}/cmd`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ op, args }) })
   const reply = await res.json()
   console.log(op, res.status, JSON.stringify(reply.ok ? reply.result : reply.error))
