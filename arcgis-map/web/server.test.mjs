@@ -241,10 +241,25 @@ test('a session map is saved: a new bridge for the same session replays it, with
   await stopBridge(saved)
 })
 
-test('a bridge that cannot get its port says so on stdout and exits', { timeout: 15000 }, async () => {
-  const second = await startBridge(PORT)
+test('a bridge that cannot get its port says so, exits, and deletes no session folder', { timeout: 15000 }, async () => {
+  const home = mkdtempSync(join(tmpdir(), 'bridge-home-'))
+  const live = join(home, '.claude/arcgis-map/sessions/live-session')
+  mkdirSync(live, { recursive: true })
+  const longAgo = new Date(Date.now() - 31 * 24 * 3600 * 1000)
+  utimesSync(live, longAgo, longAgo)
+  const second = await startBridge(PORT, { HOME: home, ARCGIS_MAP_SESSION: 'other-session' })
   assert.match(second.lines.find(line => line.startsWith('BRIDGE down')), /port 18765 is held/)
   await stopBridge(second)
+  assert.ok(existsSync(live), 'only the bridge that holds the port cleans up')
+})
+
+test('a timeout that is zero or not a number keeps the 15 s default', async () => {
+  const odd = await startBridge(SAVED_PORT, { ARCGIS_MAP_TIMEOUT_MS: 'abc' })
+  const slow = page({ port: SAVED_PORT, answer: () => sleep(300).then(() => ({ ok: true, result: {} })) })
+  await slow.until(() => slow.messages.length)
+  assert.equal((await cmd('clear_graphics', {}, SAVED_PORT)).status, 200)
+  slow.close()
+  await stopBridge(odd)
 })
 
 test('/input: events before any viewer are refused; a Chrome that cannot start is reported, not hung', async () => {

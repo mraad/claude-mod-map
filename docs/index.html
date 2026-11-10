@@ -388,7 +388,7 @@
   <tr><th>Command</th><th>What it checks</th></tr>
   <tr><td><code>claude plugin validate arcgis-map</code></td><td>The manifest, the hooks and the state contract.</td></tr>
   <tr><td><code>claude plugin test arcgis-map</code></td><td>15 tests: tools, the input relay, the wheel, the pane, the output lines, a bridge without a port and <code>/map</code>.</td></tr>
-  <tr><td><code>node --test arcgis-map/web/</code></td><td>22 tests: the Host and Origin guard, the token, files and ranges, inline data, the map log and its replay, a command that did not answer in time, the answer from many pages, screenshots, the saved session, <code>/input</code>, input mapping, and the map page and the viewer with real Chrome.</td></tr>
+  <tr><td><code>node --test arcgis-map/web/</code></td><td>23 tests: the Host and Origin guard, the token, files and ranges, inline data, the map log and its replay, a command that did not answer in time, the answer from many pages, screenshots, the saved session, <code>/input</code>, input mapping, and the map page and the viewer with real Chrome.</td></tr>
   <tr><td><code>node --test --test-name-pattern="ranges" arcgis-map/web/</code></td><td>One test by name. The pattern is case-sensitive.</td></tr>
 </table></div>
 <p>The Chrome test (<code>web/viewer.chrome.test.mjs</code>) needs Chrome and a network connection. It takes approximately 25 seconds. It skips when Chrome is not installed. It checks the first frame, a drag, the recovery after a Chrome stop, the idle stop, and the tools on the real map page. It also checks that a map page that opens later gets the same map, and that it sends few state reports during the replay.</p>
