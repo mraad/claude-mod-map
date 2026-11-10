@@ -61,7 +61,7 @@ const TOOLS = [
   {
     name: 'add_layer',
     description:
-      'Add a map layer to the live map, then zoom to it: a service URL, a GeoJSON, CSV or GeoParquet file (URL or local path), inline GeoJSON (data), or an ArcGIS Online portal item id. Use data for analysis results: one call for all features. Features get a popup of their attributes. Answers the new layer id or the load error.',
+      'Add a map layer to the live map, then zoom to it: a service URL, a GeoJSON, CSV or GeoParquet file (URL or local path), inline GeoJSON (data), or an ArcGIS Online portal item id. Use data for analysis results: one call for all features. Features get a popup of their attributes. A parquet layer zooms to its whole file, even when filtered. Answers the new layer id or the load error.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -117,7 +117,13 @@ const TOOLS = [
   {
     name: 'screenshot',
     description: 'Save a PNG of the live map as it shows now and answer its path. Read the file to check the map, or hand it to the user.',
-    inputSchema: { type: 'object', properties: {} },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        width: { type: 'number', description: 'Picture width in pixels. Default: the answering map page\'s size.' },
+        height: { type: 'number', description: 'Picture height in pixels.' },
+      },
+    },
   },
   {
     name: 'map_state',
@@ -126,7 +132,7 @@ const TOOLS = [
   },
 ] as const
 
-type Reply = { ok: boolean; error?: string; result?: unknown; url?: string; state?: MapStatus }
+type Reply = { ok: boolean; error?: string; result?: unknown; state?: MapStatus }
 
 async function setStatus($: EngineInterface, next: MapStatus) {
   await update($, status, () => next)

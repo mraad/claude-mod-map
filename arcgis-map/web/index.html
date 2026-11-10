@@ -130,9 +130,28 @@
         if (args.labelingInfo !== undefined && 'labelsVisible' in layer) layer.labelsVisible = true
       }
 
-      // fullExtent is the whole service; queryExtent honours definitionExpression (feature, GeoJSON, Parquet).
+      // The GeoParquet file bbox, from the `geo` metadata in the Parquet footer (two Range reads; 2D or 3D bbox).
+      // shortcut: SDK 5.2 ParquetLayer has no extent (fullExtent null, queryExtent throws, queries return no geometry),
+      // so a filtered layer zooms to its whole file and the bbox is taken as CRS84; use queryExtent once the SDK fixes it.
+      async function parquetExtent(urls) {
+        const boxes = await Promise.all(urls.map(async url => {
+          const tail = new DataView(await (await fetch(url, { headers: { range: 'bytes=-8' } })).arrayBuffer())
+          const footer = await (await fetch(url, { headers: { range: `bytes=-${tail.getUint32(0, true) + 8}` } })).text()
+          const box = /"bbox"\s*:\s*\[([^\]]+)\]/.exec(footer)?.[1].split(',').map(Number) ?? []
+          return box.length === 6 ? [box[0], box[1], box[3], box[4]] : box
+        }))
+        const valid = boxes.filter(b => b.length === 4 && b.every(Number.isFinite))
+        if (!valid.length) return null
+        const [xmin, ymin, xmax, ymax] = [0, 1, 2, 3].map(i => (i < 2 ? Math.min : Math.max)(...valid.map(b => b[i])))
+        // view.goTo() does not autocast a plain extent object: build the class.
+        const Extent = await $arcgis.import('@arcgis/core/geometry/Extent.js')
+        return new Extent({ xmin, ymin, xmax, ymax, spatialReference: WGS84 })
+      }
+
+      // fullExtent is the whole service; queryExtent honours definitionExpression (feature, GeoJSON, CSV).
       async function extentOf(layer) {
         if (layer.type === 'graphics') return layer.graphics.toArray()
+        if (layer.type === 'parquet') return parquetExtent(layer.data.urls)
         if (layer.queryExtent) {
           const { count, extent } = await layer.queryExtent()
           if (count > 0 && extent) return extent
@@ -184,7 +203,8 @@
           // A click on a feature shows its attributes even when Claude gave no popup.
           if (!layer.popupTemplate && layer.createPopupTemplate) layer.popupTemplate = layer.createPopupTemplate()
           map.add(layer)
-          if (args.zoomTo !== false && !replay) await view.goTo(await extentOf(layer)).catch(() => {})
+          // The layer is on the map: a failed zoom must not report it as failed (the bridge would drop it from the log).
+          if (args.zoomTo !== false && !replay) await extentOf(layer).then(extent => view.goTo(extent)).catch(() => {})
           return { layerId: layer.id, title: layer.title, type: layer.type }
         },
 
@@ -228,9 +248,10 @@
           return {}
         },
 
-        async screenshot() {
-          const { dataUrl } = await view.takeScreenshot({ format: 'png' })
-          return { dataUrl, width: view.width, height: view.height }
+        // A fixed width and height give the same picture size from the pane and the browser.
+        async screenshot({ width = view.width, height = view.height }) {
+          const { dataUrl } = await view.takeScreenshot({ format: 'png', width, height })
+          return { dataUrl, width, height }
         },
       }
 
@@ -243,10 +264,11 @@
         try {
           if (!ops[op]) throw new Error(`unknown op: ${op}`)
           const result = await ops[op](args ?? {}, { layerId, replay })
-          if (id != null) await post('/ack', { id, ok: true, result })
+          // A replay is not answered: the bridge waits for no one, and one /state follows the whole replay.
+          if (id != null && !replay) await post('/ack', { id, ok: true, result })
         } catch (err) {
           if (replay) console.warn(`replay of ${op} failed:`, err)
-          if (id != null) await post('/ack', { id, ok: false, error: String(err?.message ?? err) })
+          else if (id != null) await post('/ack', { id, ok: false, error: String(err?.message ?? err) })
         }
       }
 
@@ -254,13 +276,19 @@
       events.onopen = () => { badge.className = 'live'; badge.textContent = 'Claude: connected' }
       events.onerror = () => { badge.className = 'down'; badge.textContent = 'Claude: disconnected' }
       // A failed /ack post (bridge restarting) must not stop the queue for every later command.
+      // While commands run, the page reports nothing by itself: a half-done replay is not the map state.
+      let busy = 0
       events.onmessage = msg => {
         const command = JSON.parse(msg.data)
-        queue = queue.then(() => handle(command)).catch(err => console.warn(`${command.op} failed:`, err))
+        busy++
+        queue = queue
+          .then(() => handle(command))
+          .catch(err => console.warn(`${command.op} failed:`, err))
+          .finally(() => { if (--busy === 0 && command.replay) report() })
       }
       // Tell the bridge when the user pans or changes layers by hand.
       let timer
-      const report = () => { clearTimeout(timer); timer = setTimeout(() => post('/state', {}), 500) }
+      const report = () => { clearTimeout(timer); timer = setTimeout(() => busy || post('/state', {}), 500) }
       reactiveUtils.watch(() => view.stationary, s => s && report())
       map.layers.on('change', report)
     </script>

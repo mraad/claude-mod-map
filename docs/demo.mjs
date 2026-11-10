@@ -1,5 +1,6 @@
-// Drives the map tab and sends the same POST /cmd bodies the mod's tools send.
-import puppeteer from 'puppeteer-core'
+// Replays the demo against a bridge started by hand (no token): node arcgis-map/web/server.mjs 8765
+// Sends the same POST /cmd bodies the mod's tools send; each screenshot prints the path of its PNG.
+import { startViewer } from '../arcgis-map/web/viewer.mjs'
 
 const BASE = 'http://127.0.0.1:8765'
 const DIR = new URL('.', import.meta.url).pathname
@@ -11,20 +12,11 @@ const send = async (op, args = {}) => {
   return reply
 }
 
-const browser = await puppeteer.launch({
-  executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-  headless: 'new',
-  args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--window-size=1280,800'],
-  defaultViewport: { width: 1280, height: 800 },
-})
-const page = await browser.newPage()
-page.on('console', m => m.type() === 'error' && console.log('page error:', m.text()))
-page.on('response', r => r.url().includes('/files/') && console.log('files:', r.request().method(), r.request().headers().range ?? '-', r.status()))
-page.on('pageerror', e => console.log('page exception:', e.message))
-await page.goto(`${BASE}/`)
-await page.waitForFunction(() => document.getElementById('badge')?.className === 'live', { timeout: 60000 })
+// The map page in headless Chrome (the pane's viewer), 1280 x 800 px; no other dependency.
+const page = await startViewer({ url: `${BASE}/`, columns: 128, rows: 40, onFrame: () => {} })
+while (!(await (await fetch(`${BASE}/state`)).json()).isConnected) await new Promise(r => setTimeout(r, 200))
 await new Promise(r => setTimeout(r, 2000))
-await page.screenshot({ path: `${DIR}/shot-0-empty.png` })
+await send('screenshot')
 
 await send('add_graphic', {
   geometry: { type: 'Point', coordinates: [47.9783, 29.3759] },
@@ -45,12 +37,12 @@ await send('add_layer', {
   renderer: { type: 'simple', symbol: { type: 'simple-fill', color: [0, 0, 0, 0], outline: { color: [20, 120, 60], width: 2.5 } } },
   zoomTo: false,
 })
-await send('add_layer', { type: 'parquet', path: `${DIR}/sites.parquet`, title: 'Sites (GeoParquet)', zoomTo: false })
+await send('add_layer', { type: 'parquet', path: `${DIR}../examples/cities.parquet`, title: 'Cities (GeoParquet)', zoomTo: false })
 await send('go_to', { center: [47.95, 29.35], zoom: 9 })
 await new Promise(r => setTimeout(r, 5000))
-await page.screenshot({ path: `${DIR}/shot-1-layers.png` })
+await send('screenshot')
 const state = await send('map_state')
 console.log('state', JSON.stringify(state.state))
 await send('clear_graphics', { layer: 'Kuwait outline' })
 await send('add_layer', { type: 'geojson', url: 'https://example.invalid/nope.geojson' })
-await browser.close()
+await page.close()
