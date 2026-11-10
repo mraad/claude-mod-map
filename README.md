@@ -33,8 +33,8 @@ Claude --tool call--> mod (hooks/register.tsx) --POST /cmd--> bridge (web/server
 - Tools: `mcp__arcgis-map__add_graphic`, `add_layer`, `update_layer`, `remove_layer`, `clear_graphics`, `set_basemap`, `go_to`, `screenshot`, `map_state`.
 - `add_layer` takes `path` (absolute local `.parquet` / `.geojson` / `.csv`) or `data` (inline GeoJSON, for analysis results): the bridge serves only files passed this way, with HEAD and Range support for Parquet. Features get an attribute popup; the map has a legend (bottom left).
 - `update_layer` changes `renderer`, `definitionExpression`, `labelingInfo`, `opacity`, `visible` or `title` of a layer in place. A property the layer type does not have is an error.
-- `screenshot` saves a PNG of the map and answers its path: Claude can read it to check its work.
-- Every map page shows the same map: the bridge replays its log of map changes to each page that opens or reconnects, and layer ids match on all pages. The log is saved per Claude Code session in `~/.claude/arcgis-map/sessions/<session id>/` (with inline data and screenshots), so a mod reload or `claude --resume` shows the map again.
+- `screenshot` saves a PNG of the map and answers its path: Claude can read it to check its work. Give `width` and `height` for the same size from the pane and the browser.
+- Every map page shows the same map: the bridge replays its log of map changes to each page that opens or reconnects, and layer ids match on all pages. The log is saved per Claude Code session in `~/.claude/arcgis-map/sessions/<session id>/` (with inline data and screenshots), so a mod reload or `claude --resume` shows the map again. Session folders not used for 30 days are deleted when the bridge starts.
 - One map per machine (port 8765). A second session's bridge cannot start: its status line shows `map: off` and its tools say why.
 - `/map` opens the map **inside the Claude Code pane** (right side; Ghostty, kitty or iTerm2 under fullscreen). The bridge renders the page in headless Chrome (Metal GPU, raw CDP over a pipe, no dependency; `web/viewer.mjs`) and streams PNG frames into the pane's `Image`. Drag to pan; the wheel, a double-click or the map's +/- buttons zoom; click once, then arrows and `+`/`-` work. Set `CHROME` if Chrome is not at `/Applications/Google Chrome.app`. Chrome stops about 90 s after the pane closes and restarts when it reopens; after a crash it restarts by itself (3 tries), then the pane says why.
 - `/map browser` opens the same map as a Chrome app window on the right half of the screen Ghostty is on (its own Chrome profile in the mod's `.browser-profile/`). Full browser map: wheel zoom, sharp picture, layer list. Pane and browser can be open together; every tool updates both.
@@ -60,11 +60,13 @@ claude plugin test arcgis-map      # mod: tools, pane, bridge lines, /map
 node --test arcgis-map/web/        # bridge, viewer input mapping, real-Chrome viewer test (needs Chrome + network)
 ```
 
-`docs/demo.mjs` replays the demo in headless Chrome against a running bridge (needs `puppeteer-core`).
+`docs/demo.mjs` replays the demo in headless Chrome against a bridge you start by hand (`node arcgis-map/web/server.mjs 8765`); no npm package needed.
 
 ## Example
 
 `examples/cities-route.geojson`: one FeatureCollection with seven city Points (Sydney, Dubai, Beirut, Florence, Paris, New York, San Francisco) and one geodesic LineString through them in that order, densified along great circles (32 points per leg, 27,397 km). It is the data behind the screenshot above.
+
+`examples/cities.parquet`: the seven cities as GeoParquet 1.1 (Snappy, WKB, written with `ogr2ogr -f Parquet ... -where "kind = 'city'" -lco COMPRESSION=SNAPPY`). Try `add_layer {"type": "parquet", "path": "<repo>/examples/cities.parquet"}`. A GeoParquet layer zooms to the file bbox from its footer metadata, not to a filtered subset: SDK 5.2 `ParquetLayer` gives no extent.
 
 ## License
 
