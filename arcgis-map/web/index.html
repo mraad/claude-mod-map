@@ -91,6 +91,16 @@
         }
       }
 
+      // Basemaps that need no API key: Esri raster tiles from services.arcgisonline.com, [base, labels].
+      const TILES = 'https://services.arcgisonline.com/arcgis/rest/services'
+      const KEYLESS = {
+        'dark-gray': ['Canvas/World_Dark_Gray_Base', 'Canvas/World_Dark_Gray_Reference'],
+        'light-gray': ['Canvas/World_Light_Gray_Base', 'Canvas/World_Light_Gray_Reference'],
+        imagery: ['World_Imagery', 'Reference/World_Boundaries_and_Places'],
+        topo: ['World_Topo_Map'],
+        streets: ['World_Street_Map'],
+      }
+
       const abs = u => new URL(u, location.href).href
       const needUrl = a => {
         if (a.missing) throw new Error(a.missing)
@@ -130,32 +140,14 @@
         if (args.labelingInfo !== undefined && 'labelsVisible' in layer) layer.labelsVisible = true
       }
 
-      // The GeoParquet file bbox, from the `geo` metadata in the Parquet footer (two Range reads; 2D or 3D bbox).
-      // shortcut: SDK 5.2 ParquetLayer has no extent (fullExtent null, queryExtent throws, queries return no geometry),
-      // so a filtered layer zooms to its whole file and the bbox is taken as CRS84; use queryExtent once the SDK fixes it.
-      async function parquetExtent(urls) {
-        const boxes = await Promise.all(urls.map(async url => {
-          const tail = new DataView(await (await fetch(url, { headers: { range: 'bytes=-8' } })).arrayBuffer())
-          const footer = await (await fetch(url, { headers: { range: `bytes=-${tail.getUint32(0, true) + 8}` } })).text()
-          const box = /"bbox"\s*:\s*\[([^\]]+)\]/.exec(footer)?.[1].split(',').map(Number) ?? []
-          return box.length === 6 ? [box[0], box[1], box[3], box[4]] : box
-        }))
-        const valid = boxes.filter(b => b.length === 4 && b.every(Number.isFinite))
-        if (!valid.length) return null
-        const [xmin, ymin, xmax, ymax] = [0, 1, 2, 3].map(i => (i < 2 ? Math.min : Math.max)(...valid.map(b => b[i])))
-        // view.goTo() does not autocast a plain extent object: build the class.
-        const Extent = await $arcgis.import('@arcgis/core/geometry/Extent.js')
-        return new Extent({ xmin, ymin, xmax, ymax, spatialReference: WGS84 })
-      }
-
-      // fullExtent is the whole service; queryExtent honours definitionExpression (feature, GeoJSON, CSV).
+      // fullExtent is the whole service; queryExtent honours definitionExpression (feature, GeoJSON, CSV, Parquet).
       async function extentOf(layer) {
         if (layer.type === 'graphics') return layer.graphics.toArray()
-        if (layer.type === 'parquet') return parquetExtent(layer.data.urls)
         if (layer.queryExtent) {
           const { count, extent } = await layer.queryExtent()
           if (count > 0 && extent) return extent
         }
+        if (!layer.fullExtent) throw new Error(`layer "${layer.title ?? layer.id}" has no extent to go to`)
         return layer.fullExtent
       }
 
@@ -200,6 +192,13 @@
             throw new Error(`layer failed to load: ${err.message}`)
           }
           setProperties(layer, args)
+          // A GeoParquet file whose geometry the SDK cannot decode loads, draws nothing and fails every query
+          // (seen with GDAL 3.13 output; duckdb output works): refuse it rather than add an empty layer.
+          if (layer.type === 'parquet') {
+            await layer.queryExtent().catch(err => {
+              throw new Error(`the map cannot read the geometry of this GeoParquet file (${err.message}). Files written by duckdb work; GDAL 3.13 output did not.`)
+            })
+          }
           // A click on a feature shows its attributes even when Claude gave no popup.
           if (!layer.popupTemplate && layer.createPopupTemplate) layer.popupTemplate = layer.createPopupTemplate()
           map.add(layer)
@@ -229,12 +228,29 @@
         },
 
         // A basemap that fails (unknown id, Esri style without a key) leaves the previous one in place.
+        // A basemap that fails (unknown id, Esri style without a key, too slow) leaves the previous one in place.
         async set_basemap({ basemap }) {
+          if (typeof basemap !== 'string' || !basemap) throw new Error('basemap must be a non-empty string')
+          const tiles = Object.hasOwn(KEYLESS, basemap) ? KEYLESS[basemap] : undefined
+          if (!tiles && basemap.includes('/') && !apiKey) {
+            throw new Error(`"${basemap}" is an Esri basemap style and needs the page opened with ?apiKey=. Without a key use: osm, ${Object.keys(KEYLESS).join(', ')}.`)
+          }
           const previous = map.basemap
           try {
-            map.basemap = basemap
+            if (tiles) {
+              const [Basemap, TileLayer] = await Promise.all([$arcgis.import('@arcgis/core/Basemap.js'), use('TileLayer')])
+              const [base, labels] = tiles.map(name => name && new TileLayer({ url: `${TILES}/${name}/MapServer` }))
+              map.basemap = new Basemap({ id: basemap, baseLayers: [base], referenceLayers: labels ? [labels] : [] })
+            } else {
+              map.basemap = basemap
+            }
             if (!map.basemap) throw new Error(`unknown basemap "${basemap}"`)
-            await map.basemap.load()
+            // Fail before the bridge's 15 s timeout, so the command is reported as failed and left out of the log.
+            // The view drops its zoom levels (zoom -1) until it has the new tiling: answer once they are back.
+            await Promise.race([
+              map.basemap.load().then(() => reactiveUtils.whenOnce(() => view.zoom >= 0)),
+              new Promise((_, reject) => setTimeout(() => reject(new Error(`basemap "${basemap}" did not load in 10 s`)), 10000)),
+            ])
           } catch (err) {
             map.basemap = previous
             throw err
@@ -273,6 +289,9 @@
       }
 
       const events = new EventSource('/events')
+      // The bridge serves a newer page after a restart: reload, or this page keeps running its old code.
+      const PAGE_VERSION = '__PAGE_VERSION__'
+      events.addEventListener('version', e => e.data !== PAGE_VERSION && location.reload())
       events.onopen = () => { badge.className = 'live'; badge.textContent = 'Claude: connected' }
       events.onerror = () => { badge.className = 'down'; badge.textContent = 'Claude: disconnected' }
       // A failed /ack post (bridge restarting) must not stop the queue for every later command.

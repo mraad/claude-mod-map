@@ -35,13 +35,14 @@ Claude --tool call--> mod (hooks/register.tsx) --POST /cmd--> bridge (web/server
 - `update_layer` changes `renderer`, `definitionExpression`, `labelingInfo`, `opacity`, `visible` or `title` of a layer in place. A property the layer type does not have is an error.
 - `screenshot` saves a PNG of the map and answers its path: Claude can read it to check its work. Give `width` and `height` for the same size from the pane and the browser.
 - Every map page shows the same map: the bridge replays its log of map changes to each page that opens or reconnects, and layer ids match on all pages. The log is saved per Claude Code session in `~/.claude/arcgis-map/sessions/<session id>/` (with inline data and screenshots), so a mod reload or `claude --resume` shows the map again. Session folders not used for 30 days are deleted when the bridge starts.
+- An open map page reloads itself when a restarted bridge serves a changed `index.html`: the bridge stamps the page with a hash and sends it as `event: version` on each connect. A page opened before this check needs one manual reload.
 - One map per machine (port 8765). A second session's bridge cannot start: its status line shows `map: off` and its tools say why.
 - `/map` opens the map **inside the Claude Code pane** (right side; Ghostty, kitty or iTerm2 under fullscreen). The bridge renders the page in headless Chrome (Metal GPU, raw CDP over a pipe, no dependency; `web/viewer.mjs`) and streams PNG frames into the pane's `Image`. Drag to pan; the wheel, a double-click or the map's +/- buttons zoom; click once, then arrows and `+`/`-` work. Set `CHROME` if Chrome is not at `/Applications/Google Chrome.app`. Chrome stops about 90 s after the pane closes and restarts when it reopens; after a crash it restarts by itself (3 tries), then the pane says why.
 - `/map browser` opens the same map as a Chrome app window on the right half of the screen Ghostty is on (its own Chrome profile in the mod's `.browser-profile/`). Full browser map: wheel zoom, sharp picture, layer list. Pane and browser can be open together; every tool updates both.
 - Any browser works too: `http://127.0.0.1:8765/`.
 - The bridge only answers requests whose Host is `127.0.0.1:8765` and that carry no foreign Origin, so other web pages (and DNS rebinding) cannot reach it. Open the map at `127.0.0.1`, not `localhost`.
 - Control endpoints (`/cmd`, `/input`) also need a per-load random token that only the mod knows (`ARCGIS_MAP_TOKEN`), and registered file URLs carry random keys, so other local programs cannot drive the map or read files through it. Single-user machine assumed.
-- Basemap is OSM (no key). Add `?apiKey=...` to the page URL to use Esri basemap styles with `set_basemap`.
+- Basemap is OSM. `set_basemap` also takes `dark-gray` (dark mode), `light-gray`, `imagery`, `topo` and `streets` with no key (Esri raster tiles from `services.arcgisonline.com`). Esri basemap styles (`arcgis/...`) need `?apiKey=...` in the page URL; without it `set_basemap` refuses them.
 
 ## Run from this folder (development)
 
@@ -66,7 +67,13 @@ node --test arcgis-map/web/        # bridge, viewer input mapping, real-Chrome v
 
 `examples/cities-route.geojson`: one FeatureCollection with seven city Points (Sydney, Dubai, Beirut, Florence, Paris, New York, San Francisco) and one geodesic LineString through them in that order, densified along great circles (32 points per leg, 27,397 km). It is the data behind the screenshot above.
 
-`examples/cities.parquet`: the seven cities as GeoParquet 1.1 (Snappy, WKB, written with `ogr2ogr -f Parquet ... -where "kind = 'city'" -lco COMPRESSION=SNAPPY`). Try `add_layer {"type": "parquet", "path": "<repo>/examples/cities.parquet"}`. A GeoParquet layer zooms to the file bbox from its footer metadata, not to a filtered subset: SDK 5.2 `ParquetLayer` gives no extent.
+`examples/cities.parquet`: the seven cities as GeoParquet (WKB, Snappy), written with duckdb:
+
+```sh
+duckdb -c "LOAD spatial; COPY (SELECT name, \"order\", geom AS geometry FROM ST_Read('examples/cities-route.geojson') WHERE kind='city' ORDER BY \"order\") TO 'examples/cities.parquet' (FORMAT parquet, COMPRESSION snappy)"
+```
+
+Try `add_layer {"type": "parquet", "path": "<repo>/examples/cities.parquet"}`. The same cities written by GDAL 3.13 (`ogr2ogr -f Parquet`) load but draw nothing in SDK 5.2, so `add_layer` refuses such a file with an error.
 
 ## License
 

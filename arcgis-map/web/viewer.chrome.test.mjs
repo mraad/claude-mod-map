@@ -114,15 +114,21 @@ test('the tools work on the real page; a page that connects later rebuilds the s
   assert.equal(wrong.status, 422)
   assert.match(wrong.error, /graphics layer has no definitionExpression/)
   assert.equal((await cmd('set_basemap', { basemap: 'no-such-basemap' })).status, 422)
-  // GeoParquet from a local path: the bridge serves it with HEAD and Range, ParquetLayer reads it, a filter applies.
+  // An Esri style without a key is refused at once, not after a timeout with an empty map.
+  const t0 = Date.now()
+  const keyless = await cmd('set_basemap', { basemap: 'arcgis/dark-gray' })
+  assert.equal(keyless.status, 422)
+  assert.match(keyless.error, /needs the page opened with \?apiKey=.*dark-gray/)
+  assert.ok(Date.now() - t0 < 2000, 'refused without waiting')
+  // GeoParquet from a local path: the bridge serves it with HEAD and Range, ParquetLayer reads it, the zoom honours the filter.
   const cities = new URL('../../examples/cities.parquet', import.meta.url).pathname
   await cmd('go_to', { center: [100, -60], zoom: 6 })
   const parquet = await cmd('add_layer', { type: 'parquet', path: cities, title: 'Cities', definitionExpression: '"order" <= 3' })
   assert.equal(parquet.status, 200, parquet.error)
   assert.equal(parquet.result.type, 'parquet')
-  // It zooms to the file bbox from the footer: lon -122.4..151.2, lat -33.9..48.9, center near [14.4, 7.5].
+  // Orders 1-3 are Sydney, Dubai and Beirut: lon 35.5..151.2, lat -33.9..33.9, center near [93.4, 0].
   const [lon, lat] = parquet.state.center
-  assert.ok(Math.abs(lon - 14.4) < 10 && Math.abs(lat - 7.5) < 10, `center ${lon}, ${lat}`)
+  assert.ok(Math.abs(lon - 93.4) < 10 && Math.abs(lat) < 10, `center ${lon}, ${lat}`)
   for (let i = 0; i < 20; i++) await cmd('add_graphic', { geometry: { type: 'Point', coordinates: [i, i] }, layer: 'Notes' })
 
   const shot = await cmd('screenshot')
@@ -130,6 +136,9 @@ test('the tools work on the real page; a page that connects later rebuilds the s
   assert.equal(readFileSync(shot.result.path).subarray(1, 4).toString(), 'PNG')
   // OSM tiles make a picture of hundreds of KB; a map without its basemap is a few KB.
   assert.ok(fileSize(shot.result.path).size > 50000, 'the failed basemap left the old one in place')
+  const dark = await cmd('set_basemap', { basemap: 'dark-gray' })
+  assert.equal(dark.status, 200, dark.error)
+  assert.equal(dark.state.zoom > 0, true, `the keyless basemap keeps working zoom levels: ${JSON.stringify(dark.state)} before ${JSON.stringify(shot.state)}`)
   const sized = await cmd('screenshot', { width: 400, height: 300 })
   const png = readFileSync(sized.result.path)
   assert.deepEqual([png.readUInt32BE(16), png.readUInt32BE(20)], [400, 300], 'IHDR width and height')

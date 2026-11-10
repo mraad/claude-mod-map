@@ -61,7 +61,7 @@ function page({ port = PORT, lastEventId, answer = () => ({ ok: true, result: {}
         const block = buffer.slice(0, end)
         buffer = buffer.slice(end + 2)
         const data = /^data: (.*)$/m.exec(block)
-        if (!data) continue
+        if (!data || /^event: /m.test(block)) continue // only unnamed events are commands, as in EventSource.onmessage
         const message = JSON.parse(data[1])
         messages.push(message)
         ids.push(/^id: (.*)$/m.exec(block)?.[1])
@@ -140,6 +140,24 @@ test('inline GeoJSON becomes a served file; data on another type is refused', as
   assert.deepEqual(JSON.parse((await call('GET', url)).text), data)
   assert.equal((await cmd('add_layer', { type: 'feature', data })).status, 400)
   tab.close()
+})
+
+test('each page connect gets the version stamped on the served page, so a page with old code reloads', async () => {
+  const html = (await call('GET', '/')).text
+  const version = /const PAGE_VERSION = '([0-9a-f]{12})'/.exec(html)?.[1]
+  assert.ok(version, 'the page carries a 12-hex version')
+  const stream = await new Promise((resolve, reject) => {
+    const req = request({ host: '127.0.0.1', port: PORT, path: '/events', headers: { host: `127.0.0.1:${PORT}` } }, res => {
+      let text = ''
+      res.on('data', chunk => {
+        text += chunk
+        if (/event: version\ndata: .*\n\n/.test(text)) { req.destroy(); resolve(text) } // the whole event, not a chunk of it
+      })
+    })
+    req.on('error', reject)
+    req.end()
+  })
+  assert.match(stream, new RegExp(`event: version\ndata: ${version}\n\n`))
 })
 
 test('a new page replays the map; a reconnecting page gets only what it missed; failures and go_to are not replayed', async () => {
