@@ -10,7 +10,7 @@
 // to each page that connects (SSE ids `<epoch>:<n>`, so a reconnecting page gets only what it missed).
 // With ARCGIS_MAP_SESSION set, the log and the view are saved there, so a mod reload or `--resume` gets the map back.
 import { createServer } from 'node:http'
-import { createReadStream, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { createReadStream, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import { homedir, tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
@@ -22,17 +22,28 @@ const PORT = Number(process.argv[2] ?? 8765)
 const PAGE = readFileSync(new URL('./index.html', import.meta.url))
 // A large local file or a slow service can take a while to load; the rest is quick.
 const TIMEOUT_MS = { add_layer: 60000, screenshot: 30000 }
-const DEFAULT_TIMEOUT_MS = 15000
+const DEFAULT_TIMEOUT_MS = Number(process.env.ARCGIS_MAP_TIMEOUT_MS ?? 15000)
 // Commands that do not change what the map holds: never logged, never replayed.
 const READ_ONLY = new Set(['go_to', 'screenshot'])
 
 // The mod passes its session id: the map of each session is saved in its own folder.
 const SESSION = process.env.ARCGIS_MAP_SESSION?.replace(/[^\w-]/g, '')
-const HOME = SESSION && join(homedir(), '.claude', 'arcgis-map', 'sessions', SESSION)
+const SESSIONS = join(homedir(), '.claude', 'arcgis-map', 'sessions')
+const HOME = SESSION && join(SESSIONS, SESSION)
+const KEEP_SESSION_MS = 30 * 24 * 3600 * 1000
 const SAVE = HOME && join(HOME, 'map.json')
 // Inline GeoJSON and screenshots are written here: the session folder, or a temp folder when nothing is saved.
 const DATA = HOME ? join(HOME, 'data') : mkdtempSync(join(tmpdir(), 'arcgis-map-data-'))
 mkdirSync(DATA, { recursive: true })
+// Session maps not touched for 30 days go, with their data and screenshots.
+if (HOME) {
+  for (const name of readdirSync(SESSIONS)) {
+    const dir = join(SESSIONS, name)
+    try {
+      if (dir !== HOME && Date.now() - statSync(dir).mtimeMs > KEEP_SESSION_MS) rmSync(dir, { recursive: true, force: true })
+    } catch {}
+  }
+}
 
 function load() {
   try {
