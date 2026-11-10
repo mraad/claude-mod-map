@@ -1,6 +1,7 @@
 {
   "name": "arcgis-map",
-  "version": "0.1.0",
-  "description": "Drive a live ArcGIS Maps SDK for JavaScript 5.2 map from Claude: add graphics and layers, zoom, read map state.",
+  "version": "0.1.2",
+  "license": "MIT",
+  "description": "Drive a live ArcGIS Maps SDK for JavaScript 5.2 map from Claude: add graphics and layers (inline GeoJSON too), style, label and filter them, change the basemap, take screenshots.",
   "types": "./types/index.d.ts"
 }
