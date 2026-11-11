@@ -3,9 +3,9 @@
 import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { execFileSync, spawn } from 'node:child_process'
-import { existsSync, statSync } from 'node:fs'
+import { existsSync, readFileSync, statSync } from 'node:fs'
+import { createServer } from 'node:http'
 import { dirname } from 'node:path'
-import { readFileSync, statSync as fileSize } from 'node:fs'
 import { createInterface } from 'node:readline'
 
 import { startViewer } from './viewer.mjs'
@@ -146,7 +146,7 @@ test('the tools work on the real page; a page that connects later rebuilds the s
   assert.equal(shot.status, 200, shot.error)
   assert.equal(readFileSync(shot.result.path).subarray(1, 4).toString(), 'PNG')
   // OSM tiles make a picture of hundreds of KB; a map without its basemap is a few KB.
-  assert.ok(fileSize(shot.result.path).size > 50000, 'the failed basemap left the old one in place')
+  assert.ok(statSync(shot.result.path).size > 50000, 'the failed basemap left the old one in place')
   const dark = await cmd('set_basemap', { basemap: 'dark-gray' })
   assert.equal(dark.status, 200, dark.error)
   assert.equal(dark.state.zoom > 0, true, `the keyless basemap keeps working zoom levels: ${JSON.stringify(dark.state)} before ${JSON.stringify(shot.state)}`)
@@ -169,4 +169,27 @@ test('the tools work on the real page; a page that connects later rebuilds the s
   const titles = again.state.layers.map(l => l.title)
   assert.deepEqual(titles, ['Results', 'Notes', 'Cities', 'Cities (GDAL)', 'Cities (3857)'])
   await page.close()
+})
+
+test('a page that never finishes loading fails the start instead of hanging it', { skip, timeout: 30000 }, async () => {
+  // Answers nothing: the navigation never commits, so the load event never fires.
+  const stalled = createServer(() => {}).listen(18770, '127.0.0.1')
+  try {
+    await assert.rejects(startViewer({ url: 'http://127.0.0.1:18770/', columns: 20, rows: 10, onFrame: () => {}, loadMs: 1000 }), /did not load in 1000 ms/)
+  } finally {
+    stalled.closeAllConnections()
+    stalled.close()
+  }
+})
+
+// Last: it stops the bridge.
+test('SIGTERM stops the bridge and the pane Chrome with it', { skip, timeout: 60000 }, async () => {
+  lines.length = 0
+  await post('/input', { size: { columns: 40, rows: 15 } })
+  const [, path] = (await waitLine(/^FRAME /)).split(' ')
+  const exited = new Promise(resolve => bridge.once('exit', resolve))
+  bridge.kill('SIGTERM')
+  assert.equal(await exited, 0)
+  assert.equal(existsSync(dirname(path)), false, 'the viewer temp folder is gone')
+  assert.throws(() => execFileSync('pgrep', ['-f', dirname(path)]), 'no Chrome runs on that folder')
 })

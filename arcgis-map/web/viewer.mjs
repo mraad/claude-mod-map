@@ -108,7 +108,7 @@ export function toKeys(event) {
  * Calls onFrame(path, generation) after each new frame lands in its file, and onExit(code) if Chrome
  * exits on its own after it started (a crash), never for close().
  */
-export async function startViewer({ url, columns, rows, onFrame, onExit = () => {}, log = () => {} }) {
+export async function startViewer({ url, columns, rows, onFrame, onExit = () => {}, log = () => {}, loadMs = 30000 }) {
   const dir = mkdtempSync(join(tmpdir(), 'arcgis-map-view-'))
   const framePath = join(dir, 'frame.png')
   const proc = spawn(CHROME, [...FLAGS, `--user-data-dir=${join(dir, 'profile')}`, 'about:blank'], {
@@ -197,8 +197,12 @@ export async function startViewer({ url, columns, rows, onFrame, onExit = () => 
     await setSize()
     // A screencast started while the navigation commits fails ("Not attached to an active page"): wait for load.
     const loaded = new Promise(resolve => events.set('Page.loadEventFired', resolve))
-    await page('Page.navigate', { url })
-    await Promise.race([loaded, gone])
+    // A stalled server holds the navigation or the load event forever: give up, so the caller closes Chrome.
+    await Promise.race([
+      page('Page.navigate', { url }).then(() => loaded),
+      gone,
+      new Promise((_, reject) => setTimeout(() => reject(new Error(`the map page did not load in ${loadMs} ms`)), loadMs)),
+    ])
     await startCast()
     log(`viewer: ${size.width}x${size.height} px`)
 

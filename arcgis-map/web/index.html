@@ -235,7 +235,6 @@
           return { cleared: targets.length }
         },
 
-        // A basemap that fails (unknown id, Esri style without a key) leaves the previous one in place.
         // A basemap that fails (unknown id, Esri style without a key, too slow) leaves the previous one in place.
         async set_basemap({ basemap }) {
           if (typeof basemap !== 'string' || !basemap) throw new Error('basemap must be a non-empty string')

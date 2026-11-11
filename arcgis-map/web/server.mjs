@@ -94,6 +94,7 @@ function viewerDown(reason) {
 
 function startPaneViewer(size) {
   if (viewerFailures >= MAX_VIEWER_FAILURES) return
+  const startedAt = Date.now()
   const mine = startViewer({
     url: `http://${HOST}/?embedded=1`,
     columns: size.columns,
@@ -101,6 +102,8 @@ function startPaneViewer(size) {
     onFrame: (path, generation) => console.log(`FRAME ${path} ${generation}`),
     onExit: code => {
       if (viewer === mine) viewer = undefined
+      // Only crashes close together count: a Chrome that ran a minute gives the next one 3 tries again.
+      if (Date.now() - startedAt > 60000) viewerFailures = 0
       viewerDown(`Chrome exited (${code})`)
     },
     log: line => console.error(line),
@@ -122,6 +125,14 @@ function serve(path) {
     fileKeys.set(path, key)
   }
   return `/files/${key}/${encodeURIComponent(basename(path))}`
+}
+
+// An inline GeoJSON file (in DATA) whose layer is gone: stop serving it and delete it. Other paths are the user's.
+function forget(path) {
+  if (typeof path !== 'string' || dirname(path) !== DATA) return
+  files.delete(fileKeys.get(path))
+  fileKeys.delete(path)
+  rmSync(path, { force: true })
 }
 
 // The log keeps local paths (file URLs change per bridge); a page gets URLs.
@@ -207,6 +218,7 @@ const server = createServer(async (req, res) => {
       publish()
       req.on('close', () => {
         tabs.delete(res)
+        for (const recheck of [...pending.values()]) recheck()
         publish()
       })
       return
@@ -257,13 +269,7 @@ const server = createServer(async (req, res) => {
     }
     if (req.method === 'POST' && req.url === '/clear') {
       // Inline GeoJSON files belong to the cleared layers; screenshots in the same folder stay.
-      for (const entry of log) {
-        const { path } = entry.args
-        if (typeof path !== 'string' || dirname(path) !== DATA) continue
-        files.delete(fileKeys.get(path))
-        fileKeys.delete(path)
-        rmSync(path, { force: true })
-      }
+      for (const entry of log) forget(entry.args.path)
       log = []
       epoch = randomUUID().slice(0, 8)
       state = { ...state, layers: [] }
@@ -303,10 +309,16 @@ const server = createServer(async (req, res) => {
           pending.delete(entry.id)
           resolve(value)
         }
+        // Called with a page's answer, or with none when a page closes: a closed page never answers,
+        // so the pages still connected decide.
         pending.set(entry.id, answer => {
-          if (answer.ok) return settle(answer)
-          firstError ??= answer
-          if (++failures >= expected) settle(firstError)
+          if (answer?.ok) return settle(answer)
+          if (answer) {
+            firstError ??= answer
+            failures++
+          }
+          if (tabs.size === 0) settle(firstError ?? { ok: false, error: 'every map page closed before it answered' })
+          else if (firstError && failures >= Math.min(expected, tabs.size)) settle(firstError)
         })
         const timer = setTimeout(
           () => settle(firstError ?? { ok: false, timedOut: true, error: `the map did not answer in ${timeout} ms; it may still finish, so call map_state before retrying` }),
@@ -316,7 +328,10 @@ const server = createServer(async (req, res) => {
         for (const tab of tabs) sse(tab, message)
       })
       // A timed-out command may still finish on a page: keep it, so later pages replay the same map.
-      if (isLogged && !ack.ok && !ack.timedOut) log = log.filter(e => e !== entry)
+      if (isLogged && !ack.ok && !ack.timedOut) {
+        log = log.filter(e => e !== entry)
+        forget(entry.args.path)
+      }
       if (isLogged) save()
       let { result } = ack
       if (ack.ok && cmd.op === 'screenshot' && typeof result?.dataUrl === 'string') {
