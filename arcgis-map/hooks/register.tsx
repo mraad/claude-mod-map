@@ -245,7 +245,7 @@ export const register: Register = on => {
 
     await Promise.all([
       ...TOOLS.map(tool => $.tool.register({ ...tool, isDeferred: false })),
-      $.command.register({ name: 'map', description: 'Show the ArcGIS map: in the side pane, or in a browser window', argumentHint: '[pane|browser]' }),
+      $.command.register({ name: 'map', description: 'Show the ArcGIS map in the side pane or a browser window, or clear it', argumentHint: '[pane|browser|clear]' }),
     ])
     return started
   })
@@ -265,7 +265,13 @@ export const register: Register = on => {
   on('command.run', { command: 'map' }, async ($, e) => {
     const mode = e.args.trim().toLowerCase() || 'pane'
     if (mode === 'browser') return { text: (await openBrowser($)) ?? `Map opened in a browser window at ${BASE}/` }
-    if (mode !== 'pane') return { text: 'Usage: /map [pane|browser]' }
+    // Straight to the bridge, no model turn: it empties the saved map and resets every open page.
+    if (mode === 'clear') {
+      if (bridgeDown) return { text: `The map bridge is not running: ${bridgeDown}` }
+      const reply = await call($, '/clear', {})
+      return { text: reply.ok ? 'Map cleared: every layer removed, default basemap' : `Map not cleared: ${reply.error ?? 'failed'}` }
+    }
+    if (mode !== 'pane') return { text: 'Usage: /map [pane|browser|clear]' }
     await $.ui.open({ id: PANE, title: 'ArcGIS map' })
     return { text: `Map in the pane; /map browser opens it in a browser window too` }
   })

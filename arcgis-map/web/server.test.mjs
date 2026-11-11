@@ -225,6 +225,32 @@ test('a screenshot is written to a PNG file; its path answers, not the picture',
   tab.close()
 })
 
+test('/clear empties the map: open pages reset, and a page that reconnects with an old id starts over too', async () => {
+  const open = page()
+  await open.until(() => open.messages.length)
+  await cmd('add_graphic', { geometry: { type: 'Point', coordinates: [7, 8] } })
+  const lastId = open.ids.at(-1)
+  open.close()
+  const watching = page()
+  await watching.until(() => watching.messages.some(m => m.op === 'add_graphic'))
+  watching.messages.length = 0
+
+  assert.equal((await call('POST', '/clear', { headers: { 'x-arcgis-map-token': '' } })).status, 403, 'the mod token is required')
+  const res = await call('POST', '/clear')
+  assert.equal(res.status, 200)
+  assert.deepEqual(JSON.parse(res.text).state.layers, [])
+  assert.ok(bridge.lines.some(line => line.startsWith('STATE ') && JSON.parse(line.slice(6)).layers.length === 0))
+  await watching.until(() => watching.messages.length)
+  assert.deepEqual(watching.messages.map(m => m.op), ['reset'])
+
+  const back = page({ lastEventId: lastId })
+  await back.until(() => back.messages.length)
+  await sleep(100)
+  assert.deepEqual(back.messages.filter(m => m.op !== 'go_to').map(m => m.op), ['reset'], 'nothing from before the clear')
+  watching.close()
+  back.close()
+})
+
 test('a session map is saved: a new bridge for the same session replays it, with the local path served again', async () => {
   const home = mkdtempSync(join(tmpdir(), 'bridge-home-'))
   const env = { HOME: home, ARCGIS_MAP_SESSION: 'session-1' }
