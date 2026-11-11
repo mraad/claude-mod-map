@@ -229,10 +229,13 @@ test('/clear empties the map: open pages reset, and a page that reconnects with 
   const open = page()
   await open.until(() => open.messages.length)
   await cmd('add_graphic', { geometry: { type: 'Point', coordinates: [7, 8] } })
+  await cmd('add_layer', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } })
+  const inline = open.messages.findLast(m => m.op === 'add_layer').args.url
+  assert.equal((await call('GET', inline)).status, 200)
   const lastId = open.ids.at(-1)
   open.close()
   const watching = page()
-  await watching.until(() => watching.messages.some(m => m.op === 'add_graphic'))
+  await watching.until(() => watching.messages.some(m => m.op === 'add_layer'))
   watching.messages.length = 0
   // The page reports its layers, as a real one does after a command.
   await call('POST', '/state', { body: { state: { layers: [{ id: 'L1', title: 'Graphics', type: 'graphics', count: 1 }], center: [7, 8], zoom: 6 } } })
@@ -248,6 +251,7 @@ test('/clear empties the map: open pages reset, and a page that reconnects with 
   assert.deepEqual(after.map(s => s.layers), [[]], 'one STATE line, with no layers')
   await watching.until(() => watching.messages.length)
   assert.deepEqual(watching.messages.map(m => m.op), ['reset'])
+  assert.equal((await call('GET', inline)).status, 404, 'the inline GeoJSON file of a cleared layer is gone')
 
   const back = page({ lastEventId: lastId })
   await back.until(() => back.messages.length)

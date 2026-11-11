@@ -14,7 +14,7 @@ import { createServer } from 'node:http'
 import { createReadStream, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { createHash, randomUUID } from 'node:crypto'
 import { homedir, tmpdir } from 'node:os'
-import { basename, join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 import { text } from 'node:stream/consumers'
 
 import { startViewer } from './viewer.mjs'
@@ -256,6 +256,14 @@ const server = createServer(async (req, res) => {
       return json(res, 200, { ok: true })
     }
     if (req.method === 'POST' && req.url === '/clear') {
+      // Inline GeoJSON files belong to the cleared layers; screenshots in the same folder stay.
+      for (const entry of log) {
+        const { path } = entry.args
+        if (typeof path !== 'string' || dirname(path) !== DATA) continue
+        files.delete(fileKeys.get(path))
+        fileKeys.delete(path)
+        rmSync(path, { force: true })
+      }
       log = []
       epoch = randomUUID().slice(0, 8)
       state = { ...state, layers: [] }
