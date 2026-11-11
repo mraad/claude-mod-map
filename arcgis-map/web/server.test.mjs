@@ -234,12 +234,18 @@ test('/clear empties the map: open pages reset, and a page that reconnects with 
   const watching = page()
   await watching.until(() => watching.messages.some(m => m.op === 'add_graphic'))
   watching.messages.length = 0
+  // The page reports its layers, as a real one does after a command.
+  await call('POST', '/state', { body: { state: { layers: [{ id: 'L1', title: 'Graphics', type: 'graphics', count: 1 }], center: [7, 8], zoom: 6 } } })
 
   assert.equal((await call('POST', '/clear', { headers: { 'x-arcgis-map-token': '' } })).status, 403, 'the mod token is required')
+  assert.equal(JSON.parse((await call('GET', '/state')).text).layers.length, 1, 'a refused clear changes nothing')
+  const printed = bridge.lines.length
   const res = await call('POST', '/clear')
   assert.equal(res.status, 200)
-  assert.deepEqual(JSON.parse(res.text).state.layers, [])
-  assert.ok(bridge.lines.some(line => line.startsWith('STATE ') && JSON.parse(line.slice(6)).layers.length === 0))
+  assert.deepEqual(JSON.parse(res.text).state, { layers: [], center: [7, 8], zoom: 6, isConnected: true }, 'layers gone, view kept')
+  await sleep(50)
+  const after = bridge.lines.slice(printed).filter(line => line.startsWith('STATE ')).map(line => JSON.parse(line.slice(6)))
+  assert.deepEqual(after.map(s => s.layers), [[]], 'one STATE line, with no layers')
   await watching.until(() => watching.messages.length)
   assert.deepEqual(watching.messages.map(m => m.op), ['reset'])
 
