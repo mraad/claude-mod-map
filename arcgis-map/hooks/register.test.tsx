@@ -307,7 +307,7 @@ test('/map browser opens a Chrome app window on the right half of the focused sc
 
   await $.command.run({ ...TYPED, args: '' })
   expect(opened).toEqual(['arcgis-map'])
-  expect((await $.command.run({ ...TYPED, args: 'globe' })).text).toBe('Usage: /map [pane|browser|clear]')
+  expect((await $.command.run({ ...TYPED, args: 'globe' })).text).toBe('Usage: /map [pane|browser|clear|stop]')
 })
 
 test('/map browser without Chrome says so and names the URL', async ($, on) => {
@@ -332,4 +332,53 @@ test('/map clear asks the bridge to empty the map, with no model turn, and says 
 
   answer = reply({ ok: false, error: 'wrong bridge token' }, 403)
   expect((await $.command.run({ ...TYPED, args: 'CLEAR' })).text).toBe('Map not cleared: wrong bridge token')
+})
+
+test('/map stop ends the bridge, closes the pane and the browser window; /map browser starts it again', async ($, on) => {
+  const spawned: string[][] = []
+  const runs: string[][] = []
+  const closed: string[] = []
+  const statuses: string[] = []
+  let pkillExit = 0
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('tool.register', (_, e) => ({ value: { tool: `mcp__arcgis-map__${e.name}` } }))
+  on('command.register', () => ({ value: { command: 'map' } }))
+  on('tool.call', () => ({ result: {} }))
+  on('ui.log', () => ({ value: undefined }))
+  on('ui.status', (_, e) => {
+    statuses.push(e.text ?? '')
+    return { value: undefined }
+  })
+  on('ui.close', (_, e) => {
+    closed.push(e.id)
+    return { value: undefined }
+  })
+  on('process.run', (_, e) => {
+    runs.push([...e.argv])
+    const exitCode = e.argv[0] === 'pkill' ? pkillExit : 0
+    return { value: { exitCode, stdout: e.argv[0] === 'osascript' ? '0,33,1728,1084\n' : '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
+  // A bridge that runs until it is killed: the stream's return() aborts the spawn.
+  on('process.spawn', async function* (_, e, next) {
+    spawned.push([...e.argv])
+    yield { stream: 'stdout' as const, text: `bridge: http://127.0.0.1:8765/\nSTATE ${JSON.stringify(STATE)}\n` }
+    await new Promise<void>(resolve => next.signal.addEventListener('abort', () => resolve()))
+    return { value: { code: null, signal: 'SIGTERM' } }
+  })
+
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  expect((await $.command.run({ ...TYPED, args: 'stop' })).text).toBe('Map stopped: bridge off; browser window closed')
+  expect(runs).toEqual([['pkill', '-f', '--', expect.stringMatching(/^--user-data-dir=.+\/\.browser-profile$/)]])
+  expect(closed).toEqual(['arcgis-map'])
+  expect(statuses.at(-1)).toBe('map: off')
+  expect((await $.tool.call({ tool: 'mcp__arcgis-map__map_state' })).deny).toBe(
+    'arcgis-map: the map bridge is not running: stopped by /map stop; /map pane or /map browser starts it again')
+
+  // No window open: pkill finds nothing (exit 1); the bridge is already off.
+  pkillExit = 1
+  expect((await $.command.run({ ...TYPED, args: 'stop' })).text).toBe('The map bridge was not running')
+
+  expect((await $.command.run({ ...TYPED, args: 'browser' })).text).toBe('Map opened in a browser window at http://127.0.0.1:8765/')
+  expect(spawned.length).toBe(2)
+  expect(spawned[1]?.[1]).toMatch(/\/web\/server\.mjs$/)
 })

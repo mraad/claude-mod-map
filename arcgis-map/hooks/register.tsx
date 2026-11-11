@@ -19,8 +19,13 @@ const status = atom({ plugin: 'arcgis-map', key: 'status' } as const, { isConnec
 const frame = atom({ plugin: 'arcgis-map', key: 'frame' } as const, { path: '', generation: 0 } as MapFrame, { shape: 'frame-2' })
 // What the bridge already got from the pane's viewer-client: its instance id, last event seq and size.
 let seen = { id: '', seq: 0, size: '' }
-// Why the bridge is not running (it exited, e.g. another session holds the port); '' while it runs.
+// Why the bridge is not running (it exited, e.g. another session holds the port, or /map stop); '' while it runs.
 let bridgeDown = ''
+const STOPPED = 'stopped by /map stop; /map pane or /map browser starts it again'
+// The running bridge: its output stream (return() kills it with SIGTERM, so it closes its own Chrome first),
+// `ready` (settles on its first line: up, or why it could not start) and `done` (settles once it exited).
+let bridge: { child: ReturnType<EngineInterface['process']['spawn']>; ready: Promise<void>; done: Promise<void> } | undefined
+let session = ''
 
 const GEOMETRY = {
   type: 'object',
@@ -170,6 +175,67 @@ async function stopped($: EngineInterface, why: string) {
   $.ui.log(`arcgis-map: the map bridge stopped: ${why}`)
 }
 
+// The bridge lives as long as this module (a reload kills and restarts it) or until /map stop.
+// It prints one `STATE {...}` line per map change: the pane and status line follow those.
+// The map is saved per session, so a mod reload, `--resume` or a restart after /map stop shows it again.
+async function startBridge($: EngineInterface) {
+  // A new bridge has no picture yet; the old one's file went with it.
+  await update($, frame, () => ({ path: '', generation: 0 }))
+  bridgeDown = ''
+  const child = $.process.spawn({ argv: ['node', `${$.plugin.root}/web/server.mjs`, String(PORT)], env: { ARCGIS_MAP_TOKEN: TOKEN, ARCGIS_MAP_SESSION: session } })
+  let up = () => {}
+  const ready = new Promise<void>(resolve => (up = resolve))
+  const done = (async () => {
+    let buffer = ''
+    for await (const { stream, text } of child) {
+      if (stream !== 'stdout') {
+        $.ui.log(text.trim(), { to: 'debug' })
+        continue
+      }
+      buffer += text
+      const lines = buffer.split('\n')
+      buffer = lines.pop() ?? ''
+      for (const line of lines) {
+        try {
+          if (line.startsWith('STATE ')) await setStatus($, JSON.parse(line.slice(6)) as MapStatus)
+          else if (line.startsWith('FRAME ')) await showFrame($, line)
+          else if (line.startsWith('VIEWER ')) await viewerChanged($, line)
+          else if (line.startsWith('BRIDGE down ')) await stopped($, line.slice(12))
+          else if (line.trim()) $.ui.log(line, { to: 'debug' })
+        } catch (err) {
+          $.ui.log(`arcgis-map: bad bridge line skipped: ${String(err)}`, { to: 'debug' })
+        }
+        if (line.startsWith('bridge:') || line.startsWith('BRIDGE down ')) up()
+      }
+    }
+  })()
+    .catch(err => $.ui.log(`arcgis-map bridge failed: ${String(err)}`))
+    .finally(() => {
+      up()
+      if (bridge?.child === child) bridge = undefined
+    })
+  bridge = { child, ready, done }
+}
+
+// /map stop: ends the bridge (and with it the pane's Chrome), closes the pane and the /map browser window.
+async function stopMap($: EngineInterface): Promise<string> {
+  const running = bridge
+  bridge = undefined
+  if (running) {
+    await running.child.return(undefined as never).catch(() => undefined)
+    await running.done
+  }
+  bridgeDown = STOPPED
+  await update($, status, () => ({ isConnected: false, layers: [] }))
+  await update($, frame, () => ({ path: '', generation: 0 }))
+  $.ui.status('map: off')
+  await $.ui.close({ id: PANE }).catch(() => undefined)
+  // Only /map browser starts a Chrome with this profile (the pane's Chrome uses a temp one); none open is exit 1.
+  const killed = await $.process.run(['pkill', '-f', '--', `--user-data-dir=${$.plugin.root}/.browser-profile`]).catch(() => undefined)
+  const closed = killed?.exitCode === 0 ? '; browser window closed' : ''
+  return running ? `Map stopped: bridge off${closed}` : `The map bridge was not running${closed}`
+}
+
 // The first frame (or a new file) redraws the pane with the Image; later ones only swap its picture.
 async function showFrame($: EngineInterface, line: string) {
   const [, path = '', gen = '0'] = line.split(' ')
@@ -211,41 +277,12 @@ type ViewerPost = { id?: string; events?: { seq: number; at?: number }[]; size?:
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     const started = await next(e)
-    // A new bridge has no picture yet; the old one's file went with it.
-    await update($, frame, () => ({ path: '', generation: 0 }))
-    // The bridge lives as long as this module; a reload kills and restarts it.
-    // It prints one `STATE {...}` line per map change: the pane and status line follow those.
-    // The map is saved per session, so a mod reload or `--resume` shows it again.
-    const session = await $.session.id().catch(() => '')
-    bridgeDown = ''
-    void (async () => {
-      const bridge = $.process.spawn({ argv: ['node', `${$.plugin.root}/web/server.mjs`, String(PORT)], env: { ARCGIS_MAP_TOKEN: TOKEN, ARCGIS_MAP_SESSION: session } })
-      let buffer = ''
-      for await (const { stream, text } of bridge) {
-        if (stream !== 'stdout') {
-          $.ui.log(text.trim(), { to: 'debug' })
-          continue
-        }
-        buffer += text
-        const lines = buffer.split('\n')
-        buffer = lines.pop() ?? ''
-        for (const line of lines) {
-          try {
-            if (line.startsWith('STATE ')) await setStatus($, JSON.parse(line.slice(6)) as MapStatus)
-            else if (line.startsWith('FRAME ')) await showFrame($, line)
-            else if (line.startsWith('VIEWER ')) await viewerChanged($, line)
-            else if (line.startsWith('BRIDGE down ')) await stopped($, line.slice(12))
-            else if (line.trim()) $.ui.log(line, { to: 'debug' })
-          } catch (err) {
-            $.ui.log(`arcgis-map: bad bridge line skipped: ${String(err)}`, { to: 'debug' })
-          }
-        }
-      }
-    })().catch(err => $.ui.log(`arcgis-map bridge failed: ${String(err)}`))
+    session = await $.session.id().catch(() => '')
+    await startBridge($)
 
     await Promise.all([
       ...TOOLS.map(tool => $.tool.register({ ...tool, isDeferred: false })),
-      $.command.register({ name: 'map', description: 'Show the ArcGIS map in the side pane or a browser window, or clear it', argumentHint: '[pane|browser|clear]' }),
+      $.command.register({ name: 'map', description: 'Show the ArcGIS map in the side pane or a browser window, clear it, or stop it', argumentHint: '[pane|browser|clear|stop]' }),
     ])
     return started
   })
@@ -264,6 +301,13 @@ export const register: Register = on => {
   // Both views show the same map and take the same tools; they can be open at once.
   on('command.run', { command: 'map' }, async ($, e) => {
     const mode = e.args.trim().toLowerCase() || 'pane'
+    if (mode === 'stop') return { text: await stopMap($) }
+    // A bridge that /map stop ended, or that could not start, starts again for a view of the map.
+    if ((mode === 'browser' || mode === 'pane') && bridgeDown) {
+      await startBridge($)
+      await bridge?.ready
+      if (bridgeDown) return { text: `The map bridge is not running: ${bridgeDown}` }
+    }
     if (mode === 'browser') return { text: (await openBrowser($)) ?? `Map opened in a browser window at ${BASE}/` }
     // Straight to the bridge, no model turn: it empties the saved map and resets every open page.
     if (mode === 'clear') {
@@ -271,7 +315,7 @@ export const register: Register = on => {
       const reply = await call($, '/clear', {})
       return { text: reply.ok ? 'Map cleared: every layer removed, default basemap' : `Map not cleared: ${reply.error ?? 'failed'}` }
     }
-    if (mode !== 'pane') return { text: 'Usage: /map [pane|browser|clear]' }
+    if (mode !== 'pane') return { text: 'Usage: /map [pane|browser|clear|stop]' }
     await $.ui.open({ id: PANE, title: 'ArcGIS map' })
     return { text: `Map in the pane; /map browser opens it in a browser window too` }
   })
