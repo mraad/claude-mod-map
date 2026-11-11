@@ -8,10 +8,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Source of truth vs. loaded copy
 
-- Edit `arcgis-map/` in this folder. The copy the engine hot-reloads lives at `~/.claude/dev-mods/<session-id>/arcgis-map/` (session id in `.resume`). After edits, sync it:
-  `rsync -a --exclude .claude-plugin/types arcgis-map/ ~/.claude/dev-mods/$(cat .resume)/arcgis-map/`
+- Edit `arcgis-map/` in this folder. Run it from this folder with `claude --plugin-dir ./arcgis-map`.
+- A dev-mod session hot-reloads its own copy at `~/.claude/dev-mods/<session-id>/arcgis-map/`. After edits, sync it:
+  `rsync -a --exclude .claude-plugin/types arcgis-map/ ~/.claude/dev-mods/<session-id>/arcgis-map/`
   The mod reloads when the turn ends; a reload restarts the bridge, which replays the saved session map to the pages.
-- Outside that session, from this folder: `claude --plugin-dir ./arcgis-map`.
 
 ## Commands
 
@@ -22,8 +22,8 @@ node --test arcgis-map/web/                # bridge + viewer; viewer.chrome.test
 node --test --test-name-pattern="ranges" arcgis-map/web/  # one node test by name (case-sensitive regex)
 ```
 
-- Type check: `arcgis-map/tsconfig.json` extends `.claude-plugin/types/tsconfig.json`, which the engine writes only into the loaded copy. Copy it here once (the rsync above excludes it), then check this folder:
-  `cp -R ~/.claude/dev-mods/$(cat .resume)/arcgis-map/.claude-plugin/types arcgis-map/.claude-plugin/ && npx -p typescript tsc -p arcgis-map`
+- Type check: `arcgis-map/tsconfig.json` extends `.claude-plugin/types/tsconfig.json`, which the engine writes only into a loaded dev-mod copy (gitignored here). Before a check, refresh `arcgis-map/.claude-plugin/types/` from a loaded copy when one exists, so engine or tool changes are not checked against stale types (the rsync above excludes it): `rm -rf arcgis-map/.claude-plugin/types && cp -R ~/.claude/dev-mods/<session-id>/arcgis-map/.claude-plugin/types arcgis-map/.claude-plugin/`. Then:
+  `npx -p typescript tsc -p arcgis-map`
 - `docs/demo.mjs` replays a demo against a hand-started bridge (`node arcgis-map/web/server.mjs 8765`, no token) through `startViewer` and the `screenshot` op; no npm package.
 
 ## Architecture (read across files)
