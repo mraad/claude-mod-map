@@ -32,7 +32,7 @@ node --test --test-name-pattern="ranges" arcgis-map/web/  # one node test by nam
 Claude tool call ──> hooks/register.tsx ──$.http.fetch──> web/server.mjs (bridge, 127.0.0.1:8765)
                                                              │ SSE /events      ▲ POST /ack, /state
                                                              ▼                  │
-                               every open map page: web/index.html (<arcgis-map>, SDK 5.2 CDN)
+                               every open map page: web/index.html (<arcgis-map>, SDK 5.2.2 CDN, pinned)
                                  ├─ /map browser: Chrome app window (own profile arcgis-map/.browser-profile)
                                  └─ /map pane: headless Chrome run by web/viewer.mjs (?embedded=1)
 ```
