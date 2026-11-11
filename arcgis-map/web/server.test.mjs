@@ -324,3 +324,32 @@ test('/input: events before any viewer are refused; a Chrome that cannot start i
   const after = await call('POST', '/input', { body: { events: [{ seq: 2, kind: 'key', key: '+' }] } })
   assert.equal(after.status, 409, 'the failed viewer was dropped, so the next size can retry')
 })
+
+test('a page that closes without answering does not hold up the others: the error answers at once', async () => {
+  const failing = page({ answer: () => ({ ok: false, error: 'broken page' }) })
+  const silent = page({ answer: () => undefined })
+  await failing.until(() => failing.messages.length)
+  await silent.until(() => silent.messages.length)
+  const t0 = Date.now()
+  setTimeout(() => silent.close(), 100)
+  const res = await cmd('clear_graphics')
+  assert.equal(res.error, 'broken page')
+  assert.ok(Date.now() - t0 < 700, `answered in ${Date.now() - t0} ms, not at the 1000 ms timeout`)
+  failing.close()
+
+  const last = page({ answer: () => undefined })
+  await last.until(() => last.messages.length)
+  setTimeout(() => last.close(), 100)
+  assert.equal((await cmd('clear_graphics')).error, 'every map page closed before it answered')
+})
+
+test('inline GeoJSON of a layer every page refused is no longer served', async () => {
+  const refusing = page({ answer: m => (m.op === 'add_layer' ? { ok: false, error: 'bad layer' } : { ok: true, result: {} }) })
+  await refusing.until(() => refusing.messages.length)
+  const res = await cmd('add_layer', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } })
+  assert.equal(res.error, 'bad layer')
+  const url = refusing.messages.find(m => m.op === 'add_layer')?.args.url
+  assert.match(url, /^\/files\/.+\.geojson$/)
+  assert.equal((await call('GET', url)).status, 404)
+  refusing.close()
+})
