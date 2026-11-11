@@ -120,8 +120,16 @@
           if (a.missing) throw new Error(a.missing)
           const urls = [a.url, ...(a.urls ?? [])].filter(Boolean).map(abs)
           if (!urls.length) throw new Error('parquet layer needs url, urls or path')
-          const [ParquetLayer, ParquetFilesData] = await Promise.all([use('ParquetLayer'), use('support/ParquetFilesData')])
-          return new ParquetLayer({ data: new ParquetFilesData({ urls }) })
+          const [ParquetLayer, ParquetFilesData, parquetUtils] = await Promise.all([
+            use('ParquetLayer'), use('support/ParquetFilesData'), use('support/parquetUtils'),
+          ])
+          const info = await parquetUtils.getParquetLayerInfo(new ParquetFilesData({ urls })).catch(err => {
+            throw new Error(`layer failed to load: ${err.message}`)
+          })
+          // GeoParquet without a `crs` means OGC:CRS84 (GDAL writes none for WGS84), but SDK 5.2 then reads the geometry
+          // with no spatial reference and every query fails ("reading 'toJSON'"). Default only a missing one: a layer-level
+          // spatialReference would override a file's own `crs`.
+          return new ParquetLayer({ ...info, spatialReference: info.spatialReference ?? { wkid: 4326 } })
         },
         'portal-item': async a => {
           if (!a.itemId) throw new Error('portal-item needs itemId')
@@ -192,11 +200,11 @@
             throw new Error(`layer failed to load: ${err.message}`)
           }
           setProperties(layer, args)
-          // A GeoParquet file whose geometry the SDK cannot decode loads, draws nothing and fails every query
-          // (seen with GDAL 3.13 output; duckdb output works): refuse it rather than add an empty layer.
+          // A GeoParquet file whose geometry the SDK still cannot decode loads, draws nothing and fails every
+          // query: refuse it rather than add an empty layer.
           if (layer.type === 'parquet') {
             await layer.queryExtent().catch(err => {
-              throw new Error(`the map cannot read the geometry of this GeoParquet file (${err.message}). Files written by duckdb work; GDAL 3.13 output did not.`)
+              throw new Error(`the map cannot read the geometry of this GeoParquet file (${err.message}). Check its geo metadata.`)
             })
           }
           // A click on a feature shows its attributes even when Claude gave no popup.

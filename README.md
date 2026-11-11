@@ -74,7 +74,7 @@ node --test arcgis-map/web/        # bridge, viewer input mapping, real-Chrome v
 duckdb -c "LOAD spatial; COPY (SELECT name, \"order\", geom AS geometry FROM ST_Read('examples/cities-route.geojson') WHERE kind='city' ORDER BY \"order\") TO 'examples/cities.parquet' (FORMAT parquet, COMPRESSION snappy)"
 ```
 
-Try `add_layer {"type": "parquet", "path": "<repo>/examples/cities.parquet"}`. The same cities written by GDAL 3.13 (`ogr2ogr -f Parquet`) load but draw nothing in SDK 5.2, so `add_layer` refuses such a file with an error.
+Try `add_layer {"type": "parquet", "path": "<repo>/examples/cities.parquet"}`. `examples/cities-gdal.parquet` holds the same cities written by GDAL 3.13 (`ogr2ogr -f Parquet`) with no `crs`; the map applies the GeoParquet default (OGC:CRS84). A file with its own `crs` keeps it (`examples/cities-3857.parquet`).
 
 ## License
 

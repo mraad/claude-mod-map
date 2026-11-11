@@ -129,6 +129,17 @@ test('the tools work on the real page; a page that connects later rebuilds the s
   // Orders 1-3 are Sydney, Dubai and Beirut: lon 35.5..151.2, lat -33.9..33.9, center near [93.4, 0].
   const [lon, lat] = parquet.state.center
   assert.ok(Math.abs(lon - 93.4) < 10 && Math.abs(lat) < 10, `center ${lon}, ${lat}`)
+  // GDAL 3.13 writes no `crs` for WGS84 (GeoParquet default OGC:CRS84); the page applies that default.
+  const gdal = new URL('../../examples/cities-gdal.parquet', import.meta.url).pathname
+  const noCrs = await cmd('add_layer', { type: 'parquet', path: gdal, title: 'Cities (GDAL)', zoomTo: false })
+  assert.equal(noCrs.status, 200, noCrs.error)
+  // A file's own `crs` wins over that default: EPSG:3857 cities zoom to the same place as the WGS84 ones.
+  const mercator = new URL('../../examples/cities-3857.parquet', import.meta.url).pathname
+  await cmd('go_to', { center: [100, -60], zoom: 6 })
+  const projected = await cmd('add_layer', { type: 'parquet', path: mercator, title: 'Cities (3857)', definitionExpression: '"order" <= 3' })
+  assert.equal(projected.status, 200, projected.error)
+  const [lon3857, lat3857] = projected.state.center
+  assert.ok(Math.abs(lon3857 - 93.4) < 10 && Math.abs(lat3857) < 10, `center ${lon3857}, ${lat3857}`)
   for (let i = 0; i < 20; i++) await cmd('add_graphic', { geometry: { type: 'Point', coordinates: [i, i] }, layer: 'Notes' })
 
   const shot = await cmd('screenshot')
@@ -149,13 +160,13 @@ test('the tools work on the real page; a page that connects later rebuilds the s
   page = await open()
   await waitConnected()
   await sleep(2000)
-  // 24 logged commands replay; the page answers none and reports once at the end.
+  // 27 logged commands replay; the page answers none and reports once at the end.
   const states = lines.filter(line => line.startsWith('STATE ')).length
   assert.ok(states <= 4, `${states} STATE lines while the page replayed`)
   // Only a page that replayed the log has a layer with this id.
   const again = await cmd('update_layer', { id: layerId, opacity: 0.5 })
   assert.equal(again.status, 200, again.error)
   const titles = again.state.layers.map(l => l.title)
-  assert.deepEqual(titles, ['Results', 'Notes', 'Cities'])
+  assert.deepEqual(titles, ['Results', 'Notes', 'Cities', 'Cities (GDAL)', 'Cities (3857)'])
   await page.close()
 })
