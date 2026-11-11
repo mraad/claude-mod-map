@@ -22,7 +22,7 @@ node --test arcgis-map/web/                # bridge + viewer; viewer.chrome.test
 node --test --test-name-pattern="ranges" arcgis-map/web/  # one node test by name (case-sensitive regex)
 ```
 
-- Type check: `arcgis-map/tsconfig.json` extends `.claude-plugin/types/tsconfig.json`, which the engine writes only into a loaded dev-mod copy (gitignored here). If `arcgis-map/.claude-plugin/types/` is missing, copy it once from `~/.claude/dev-mods/<session-id>/arcgis-map/.claude-plugin/types` (the rsync above excludes it). Then:
+- Type check: `arcgis-map/tsconfig.json` extends `.claude-plugin/types/tsconfig.json`, which the engine writes only into a loaded dev-mod copy (gitignored here). Before a check, refresh `arcgis-map/.claude-plugin/types/` from a loaded copy when one exists, so engine or tool changes are not checked against stale types (the rsync above excludes it): `rm -rf arcgis-map/.claude-plugin/types && cp -R ~/.claude/dev-mods/<session-id>/arcgis-map/.claude-plugin/types arcgis-map/.claude-plugin/`. Then:
   `npx -p typescript tsc -p arcgis-map`
 - `docs/demo.mjs` replays a demo against a hand-started bridge (`node arcgis-map/web/server.mjs 8765`, no token) through `startViewer` and the `screenshot` op; no npm package.
 
