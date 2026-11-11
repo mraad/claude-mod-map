@@ -2,6 +2,7 @@
 // Mod: POST /cmd {op, args} -> waits for a page's answer. A local `path` (or inline GeoJSON `data`) is
 // served here under a random URL; only such files are served, never an arbitrary path.
 // Page: GET /events (SSE), POST /ack (a command's answer), POST /state (manual pan or layer change).
+// Mod: POST /clear empties the map (every layer gone, default basemap, view kept), with or without a page open.
 // Pane: POST /input {size} starts headless Chrome on this page (viewer.mjs); {events} are its mouse, keys, wheel.
 // Stdout lines the mod reads: `STATE {...}` per map change, `FRAME <path> <generation>` per pane picture,
 // `VIEWER down` (Chrome died: send the size again to restart), `VIEWER failed <why>` (gave up), `VIEWER idle`.
@@ -61,7 +62,8 @@ function load() {
 }
 // shortcut: the log only grows (a removed layer stays as add + remove); compact it if replays get slow.
 const saved = SAVE ? load() : { epoch: randomUUID().slice(0, 8), log: [], view: {} }
-const { epoch } = saved
+// A new epoch on /clear: a page that reconnects with an id from the old log starts over.
+let { epoch } = saved
 let log = saved.log
 let nextId = Math.max(0, ...log.map(entry => entry.id)) + 1
 
@@ -154,9 +156,9 @@ const publish = () => console.log(`STATE ${JSON.stringify(snapshot())}`)
 
 const HOST = `127.0.0.1:${PORT}`
 // The mod's per-session secret: the Host/Origin guard stops web pages, not other local programs.
-// Set, it is required on the control endpoints (/cmd, /input) that only the mod calls.
+// Set, it is required on the control endpoints (/cmd, /input, /clear) that only the mod calls.
 const TOKEN = process.env.ARCGIS_MAP_TOKEN
-const CONTROL = new Set(['/cmd', '/input'])
+const CONTROL = new Set(['/cmd', '/input', '/clear'])
 
 // Inline GeoJSON becomes a file in the data folder, so the log stays small and holds a path like any other.
 function prepare(cmd, id) {
@@ -252,6 +254,16 @@ const server = createServer(async (req, res) => {
         ;(await viewer).input(events)
       }
       return json(res, 200, { ok: true })
+    }
+    if (req.method === 'POST' && req.url === '/clear') {
+      log = []
+      epoch = randomUUID().slice(0, 8)
+      state = { ...state, layers: [] }
+      // Sent as a replay: the page posts its state once the reset has run.
+      for (const tab of tabs) sse(tab, { op: 'reset', replay: true }, false)
+      save()
+      publish()
+      return json(res, 200, { ok: true, state: snapshot() })
     }
     if (req.method === 'POST' && req.url === '/cmd') {
       const cmd = await body(req)

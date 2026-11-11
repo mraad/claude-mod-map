@@ -225,6 +225,38 @@ test('a screenshot is written to a PNG file; its path answers, not the picture',
   tab.close()
 })
 
+test('/clear empties the map: open pages reset, and a page that reconnects with an old id starts over too', async () => {
+  const open = page()
+  await open.until(() => open.messages.length)
+  await cmd('add_graphic', { geometry: { type: 'Point', coordinates: [7, 8] } })
+  const lastId = open.ids.at(-1)
+  open.close()
+  const watching = page()
+  await watching.until(() => watching.messages.some(m => m.op === 'add_graphic'))
+  watching.messages.length = 0
+  // The page reports its layers, as a real one does after a command.
+  await call('POST', '/state', { body: { state: { layers: [{ id: 'L1', title: 'Graphics', type: 'graphics', count: 1 }], center: [7, 8], zoom: 6 } } })
+
+  assert.equal((await call('POST', '/clear', { headers: { 'x-arcgis-map-token': '' } })).status, 403, 'the mod token is required')
+  assert.equal(JSON.parse((await call('GET', '/state')).text).layers.length, 1, 'a refused clear changes nothing')
+  const printed = bridge.lines.length
+  const res = await call('POST', '/clear')
+  assert.equal(res.status, 200)
+  assert.deepEqual(JSON.parse(res.text).state, { layers: [], center: [7, 8], zoom: 6, isConnected: true }, 'layers gone, view kept')
+  await sleep(50)
+  const after = bridge.lines.slice(printed).filter(line => line.startsWith('STATE ')).map(line => JSON.parse(line.slice(6)))
+  assert.deepEqual(after.map(s => s.layers), [[]], 'one STATE line, with no layers')
+  await watching.until(() => watching.messages.length)
+  assert.deepEqual(watching.messages.map(m => m.op), ['reset'])
+
+  const back = page({ lastEventId: lastId })
+  await back.until(() => back.messages.length)
+  await sleep(100)
+  assert.deepEqual(back.messages.filter(m => m.op !== 'go_to').map(m => m.op), ['reset'], 'nothing from before the clear')
+  watching.close()
+  back.close()
+})
+
 test('a session map is saved: a new bridge for the same session replays it, with the local path served again', async () => {
   const home = mkdtempSync(join(tmpdir(), 'bridge-home-'))
   const env = { HOME: home, ARCGIS_MAP_SESSION: 'session-1' }

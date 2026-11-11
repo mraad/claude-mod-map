@@ -307,7 +307,7 @@ test('/map browser opens a Chrome app window on the right half of the focused sc
 
   await $.command.run({ ...TYPED, args: '' })
   expect(opened).toEqual(['arcgis-map'])
-  expect((await $.command.run({ ...TYPED, args: 'globe' })).text).toBe('Usage: /map [pane|browser]')
+  expect((await $.command.run({ ...TYPED, args: 'globe' })).text).toBe('Usage: /map [pane|browser|clear]')
 })
 
 test('/map browser without Chrome says so and names the URL', async ($, on) => {
@@ -317,4 +317,19 @@ test('/map browser without Chrome says so and names the URL', async ($, on) => {
   const ran = await $.command.run({ ...TYPED, args: 'browser' })
 
   expect(ran.text).toBe('Chrome did not open: Unable to find application named Google Chrome. Open http://127.0.0.1:8765/ in any browser.')
+})
+
+test('/map clear asks the bridge to empty the map, with no model turn, and says when it could not', async ($, on) => {
+  const posted: { url: string; method?: string; token?: string }[] = []
+  let answer = reply({ ok: true, state: { isConnected: true, layers: [] } })
+  on('http.fetch', (_, e) => {
+    posted.push({ url: e.url, method: e.init?.method, token: (e.init?.headers as Record<string, string> | undefined)?.['x-arcgis-map-token'] })
+    return answer
+  })
+
+  expect((await $.command.run({ ...TYPED, args: 'clear' })).text).toBe('Map cleared: every layer removed, default basemap')
+  expect(posted).toEqual([{ url: 'http://127.0.0.1:8765/clear', method: 'POST', token: expect.stringMatching(/.+/) }])
+
+  answer = reply({ ok: false, error: 'wrong bridge token' }, 403)
+  expect((await $.command.run({ ...TYPED, args: 'CLEAR' })).text).toBe('Map not cleared: wrong bridge token')
 })
