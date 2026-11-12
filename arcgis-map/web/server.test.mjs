@@ -85,6 +85,21 @@ test('/cmd with no map page answers 503 with the map state', async () => {
   assert.equal(res.state.isConnected, false)
 })
 
+test('/cmd with waitMs waits for a first page to connect, then sends to it; with none it gives up', async () => {
+  const waited = call('POST', '/cmd', { body: { op: 'go_to', args: { zoom: 4 }, waitMs: 5000 } }).then(res => ({ status: res.status, ...JSON.parse(res.text) }))
+  await sleep(200)
+  const tab = page()
+  const res = await waited
+  tab.close()
+  assert.equal(res.status, 200)
+  assert.equal(tab.messages.at(-1).op, 'go_to')
+
+  const none = await call('POST', '/cmd', { body: { op: 'go_to', args: {}, waitMs: 100 } }).then(r => ({ status: r.status, ...JSON.parse(r.text) }))
+  assert.equal(none.status, 503)
+  assert.equal(none.noPage, true)
+  assert.match(none.error, /after 100 ms/)
+})
+
 test('a foreign Host (DNS rebinding) or Origin (other web page) is refused', async () => {
   assert.equal((await call('GET', '/state', { headers: { host: 'evil.example:18765' } })).status, 403)
   const crossSite = await call('POST', '/cmd', {
