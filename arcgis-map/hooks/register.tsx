@@ -240,7 +240,7 @@ async function followSession($: EngineInterface, ended: string) {
   // The new id is not known inside session.end: poll for it, 10 s at most.
   let id = ended
   for (let i = 0; i < 100 && id === ended; i++) {
-    await new Promise(resolve => setTimeout(resolve, 100))
+    await $.clock.sleep(100)
     id = await $.session.id().catch(() => ended)
   }
   if (id === ended) return $.ui.log('arcgis-map: no new session id after session.end; the map stays', { to: 'debug' })

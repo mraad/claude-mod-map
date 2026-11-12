@@ -1,4 +1,4 @@
-import { expect, test } from 'claude-code/testing'
+import { expect, mock, test } from 'claude-code/testing'
 
 const PANE = {
   plugin: 'arcgis-map',
@@ -421,6 +421,7 @@ test('/clear restarts the bridge under the new session id, so the pages reset; /
   const spawned: Record<string, string>[] = []
   let id = 'old-id'
   let nextId = 'new-id'
+  const clock = mock.clock(on)
   on('session.start', (_, e) => ({ cwd: e.cwd }))
   on('session.end', (_, e) => {
     id = nextId // the engine moves to the new id once the old session ended
@@ -442,7 +443,7 @@ test('/clear restarts the bridge under the new session id, so the pages reset; /
 
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
   await $.session.end({ reason: 'clear', sessionId: 'old-id', resume: { id: 'old-id' } } as never)
-  for (let i = 0; i < 100 && spawned.length < 2; i++) await new Promise(resolve => setTimeout(resolve, 50))
+  await clock.advance(100)
   expect(spawned.map(env => env.ARCGIS_MAP_SESSION)).toEqual(['old-id', 'new-id'])
 
   // Stopped by the person: a later /clear only notes the id for the next /map pane|browser.
@@ -450,7 +451,7 @@ test('/clear restarts the bridge under the new session id, so the pages reset; /
   id = 'new-id'
   nextId = 'third-id'
   await $.session.end({ reason: 'clear', sessionId: 'new-id', resume: { id: 'new-id' } } as never)
-  await new Promise(resolve => setTimeout(resolve, 300))
+  await clock.advance(100)
   expect(spawned.length).toBe(2)
   await $.command.run({ ...TYPED, args: 'browser' })
   expect(spawned.map(env => env.ARCGIS_MAP_SESSION)).toEqual(['old-id', 'new-id', 'third-id'])
