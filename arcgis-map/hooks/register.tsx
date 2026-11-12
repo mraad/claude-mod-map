@@ -11,6 +11,8 @@ const PANE = 'arcgis-map'
 const HEADER_ROWS = 2
 // Proves to the bridge that a control request comes from this mod; new per load, like the bridge.
 const TOKEN = crypto.randomUUID()
+// How long the bridge waits for the pane's page after a tool call opened the pane (Chrome start + page load).
+const PAGE_WAIT_MS = 30000
 
 // Change the tag when MapStatus changes: it declines what an earlier version stored.
 const status = atom({ plugin: 'arcgis-map', key: 'status' } as const, { isConnected: false, layers: [] } as MapStatus, {
@@ -137,7 +139,7 @@ const TOOLS = [
   },
 ] as const
 
-type Reply = { ok: boolean; error?: string; result?: unknown; state?: MapStatus }
+type Reply = { ok: boolean; error?: string; noPage?: boolean; result?: unknown; state?: MapStatus }
 
 async function setStatus($: EngineInterface, next: MapStatus) {
   await update($, status, () => next)
@@ -164,7 +166,12 @@ async function run($: EngineInterface, op: string, args: Record<string, unknown>
     const reply = await call($, '/state')
     return 'error' in reply ? reply : { ok: true, state: reply as unknown as MapStatus }
   }
-  return call($, '/cmd', { op, args })
+  const reply = await call($, '/cmd', { op, args })
+  if (!reply.noPage) return reply
+  // No page shows the map: open the pane (its headless Chrome is one), and the bridge waits for it to connect.
+  const opened = await $.ui.open({ id: PANE, title: 'ArcGIS map' })
+  if (!opened.isPlaced) return { ...reply, error: `${reply.error} The pane could not open: ${opened.reason}` }
+  return call($, '/cmd', { op, args, waitMs: PAGE_WAIT_MS })
 }
 
 // The bridge could not start (another session holds the port): say so in the status line and in tool errors.

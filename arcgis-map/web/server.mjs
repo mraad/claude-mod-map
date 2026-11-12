@@ -74,6 +74,8 @@ const save = () => {
 }
 
 const tabs = new Set()
+// /cmd calls waiting for a first page (the mod just opened the pane): resolved when a page connects.
+const tabWaiters = new Set()
 const pending = new Map()
 let state = { layers: [], ...saved.view }
 // Local files the mod asked to show, by key and by path.
@@ -215,6 +217,7 @@ const server = createServer(async (req, res) => {
       for (const entry of log) if (!isKnown || entry.id > Number(lastN)) sse(res, toPage(entry, true))
       if (!isKnown && state.center) sse(res, { op: 'go_to', args: { center: state.center, zoom: state.zoom }, replay: true }, false)
       tabs.add(res)
+      for (const wake of tabWaiters) wake()
       publish()
       req.on('close', () => {
         tabs.delete(res)
@@ -282,10 +285,20 @@ const server = createServer(async (req, res) => {
     if (req.method === 'POST' && req.url === '/cmd') {
       const cmd = await body(req)
       if (typeof cmd.op !== 'string') return json(res, 400, { ok: false, error: 'op missing' })
+      // waitMs: the mod opened the pane for this call; give its headless Chrome time to load the page.
+      const waitMs = Math.min(Number(cmd.waitMs) || 0, 60000)
+      if (tabs.size === 0 && waitMs > 0) {
+        await new Promise(resolve => {
+          const wake = () => (clearTimeout(timer), tabWaiters.delete(wake), resolve())
+          const timer = setTimeout(wake, waitMs)
+          tabWaiters.add(wake)
+        })
+      }
       if (tabs.size === 0) {
         return json(res, 503, {
           ok: false,
-          error: `No map page is open. Run /map (pane) or /map browser, or open http://${HOST}/.`,
+          noPage: true,
+          error: `No map page is open${waitMs > 0 ? ` after ${waitMs} ms` : ''}. Run /map (pane) or /map browser, or open http://${HOST}/.`,
           state: snapshot(),
         })
       }

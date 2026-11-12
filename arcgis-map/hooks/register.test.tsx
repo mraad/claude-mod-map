@@ -287,6 +287,40 @@ test('the wheel over the pane zooms the map instead of scrolling the pane', asyn
 // `/map …` typed at the prompt of a fullscreen terminal.
 const TYPED = { command: 'map', origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 160 } } as const
 
+test('a tool call with no map page opens the pane, then sends again with a wait for its page', async ($, on) => {
+  const bodies: Record<string, unknown>[] = []
+  const opened: string[] = []
+  on('http.fetch', (_, e) => {
+    bodies.push(JSON.parse(bodyText(e.init?.body)))
+    return bodies.length === 1
+      ? reply({ ok: false, noPage: true, error: 'No map page is open.', state: { isConnected: false, layers: [] } }, 503)
+      : reply({ ok: true, result: {}, state: STATE })
+  })
+  on('ui.open', (_, e) => {
+    opened.push(e.id)
+    return { value: { isPlaced: true } }
+  })
+  on('tool.call', () => ({ result: {} }))
+
+  const ran = await $.tool.call({ tool: 'mcp__arcgis-map__go_to', zoom: 3 })
+
+  expect(opened).toEqual(['arcgis-map'])
+  expect(bodies).toEqual([{ op: 'go_to', args: { zoom: 3 } }, { op: 'go_to', args: { zoom: 3 }, waitMs: 30000 }])
+  expect(JSON.parse(String(ran.result)).map).toEqual(STATE)
+})
+
+test('a pane that cannot open: the tool says why, with no second send', async ($, on) => {
+  let sends = 0
+  on('http.fetch', () => (sends++, reply({ ok: false, noPage: true, error: 'No map page is open.' }, 503)))
+  on('ui.open', () => ({ value: { isPlaced: false, reason: 'terminal too narrow' } }))
+  on('tool.call', () => ({ result: {} }))
+
+  const ran = await $.tool.call({ tool: 'mcp__arcgis-map__go_to', zoom: 3 })
+
+  expect(sends).toBe(1)
+  expect(ran.deny).toBe('arcgis-map: No map page is open. The pane could not open: terminal too narrow')
+})
+
 test('/map browser opens a Chrome app window on the right half of the focused screen; /map opens the pane', async ($, on) => {
   const runs: string[][] = []
   const opened: string[] = []
