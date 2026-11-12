@@ -224,14 +224,38 @@ async function startBridge($: EngineInterface) {
   bridge = { child, ready, done }
 }
 
-// /map stop: ends the bridge (and with it the pane's Chrome), closes the pane and the /map browser window.
-async function stopMap($: EngineInterface): Promise<string> {
+// Ends the bridge (and with it the pane's Chrome) and waits for it to exit; answers whether one ran.
+async function killBridge(): Promise<boolean> {
   const running = bridge
   bridge = undefined
-  if (running) {
-    await running.child.return(undefined as never).catch(() => undefined)
-    await running.done
+  if (!running) return false
+  await running.child.return(undefined as never).catch(() => undefined)
+  await running.done
+  return true
+}
+
+// /clear and /resume go on under another session id, and no session.start fires for it (engine docs).
+// Restart the bridge under the new id, so every page resets to that session's saved map: none after /clear.
+async function followSession($: EngineInterface, ended: string) {
+  // The new id is not known inside session.end: poll for it, 10 s at most.
+  let id = ended
+  for (let i = 0; i < 100 && id === ended; i++) {
+    await new Promise(resolve => setTimeout(resolve, 100))
+    id = await $.session.id().catch(() => ended)
   }
+  if (id === ended) return $.ui.log('arcgis-map: no new session id after session.end; the map stays', { to: 'debug' })
+  session = id
+  // A bridge /map stop ended, or that could not start, starts with the new id on the next /map pane|browser.
+  if (!(await killBridge())) return
+  await startBridge($)
+  await bridge?.ready
+  // The new bridge's Chrome starts on a pane size; the pane re-sends one only when it changes.
+  if (!bridgeDown && seen.size) await call($, '/input', { size: JSON.parse(seen.size) })
+}
+
+// /map stop: ends the bridge, closes the pane and the /map browser window.
+async function stopMap($: EngineInterface): Promise<string> {
+  const running = await killBridge()
   bridgeDown = STOPPED
   await update($, status, () => ({ isConnected: false, layers: [] }))
   await update($, frame, () => ({ path: '', generation: 0 }))
@@ -292,6 +316,12 @@ export const register: Register = on => {
       $.command.register({ name: 'map', description: 'Show the ArcGIS map in the side pane or a browser window, clear it, or stop it', argumentHint: '[pane|browser|clear|stop]' }),
     ])
     return started
+  })
+
+  // Not awaited: the chain shares a short bound, and the new session id exists only after it.
+  on('session.end', ($, e, next) => {
+    if (e.reason === 'clear' || e.reason === 'resume') void followSession($, e.sessionId).catch(err => $.ui.log(`arcgis-map: ${String(err)}`, { to: 'debug' }))
+    return next(e)
   })
 
   // One hook for the mod's own tools; a RegExp because the engine's tool-name type lists only tools seen at load.
