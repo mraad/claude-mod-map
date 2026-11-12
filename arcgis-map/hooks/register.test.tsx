@@ -1,4 +1,4 @@
-import { expect, test } from 'claude-code/testing'
+import { expect, mock, test } from 'claude-code/testing'
 
 const PANE = {
   plugin: 'arcgis-map',
@@ -415,4 +415,44 @@ test('/map stop ends the bridge, closes the pane and the browser window; /map br
   expect((await $.command.run({ ...TYPED, args: 'browser' })).text).toBe('Map opened in a browser window at http://127.0.0.1:8765/')
   expect(spawned.length).toBe(2)
   expect(spawned[1]?.[1]).toMatch(/\/web\/server\.mjs$/)
+})
+
+test('/clear restarts the bridge under the new session id, so the pages reset; /map stop keeps it off', async ($, on) => {
+  const spawned: Record<string, string>[] = []
+  let id = 'old-id'
+  let nextId = 'new-id'
+  const clock = mock.clock(on)
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('session.end', (_, e) => {
+    id = nextId // the engine moves to the new id once the old session ended
+    return { sessionId: e.sessionId }
+  })
+  on('session.id', () => ({ value: id }))
+  on('tool.register', (_, e) => ({ value: { tool: `mcp__arcgis-map__${e.name}` } }))
+  on('command.register', () => ({ value: { command: 'map' } }))
+  on('ui.log', () => ({ value: undefined }))
+  on('ui.status', () => ({ value: undefined }))
+  on('ui.close', () => ({ value: undefined }))
+  on('process.run', () => ({ value: { exitCode: 1, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }))
+  on('process.spawn', async function* (_, e, next) {
+    spawned.push({ ...e.env })
+    yield { stream: 'stdout' as const, text: 'bridge: http://127.0.0.1:8765/\n' }
+    await new Promise<void>(resolve => next.signal.addEventListener('abort', () => resolve()))
+    return { value: { code: null, signal: 'SIGTERM' } }
+  })
+
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await $.session.end({ reason: 'clear', sessionId: 'old-id', resume: { id: 'old-id' } } as never)
+  await clock.advance(100)
+  expect(spawned.map(env => env.ARCGIS_MAP_SESSION)).toEqual(['old-id', 'new-id'])
+
+  // Stopped by the person: a later /clear only notes the id for the next /map pane|browser.
+  await $.command.run({ ...TYPED, args: 'stop' })
+  id = 'new-id'
+  nextId = 'third-id'
+  await $.session.end({ reason: 'clear', sessionId: 'new-id', resume: { id: 'new-id' } } as never)
+  await clock.advance(100)
+  expect(spawned.length).toBe(2)
+  await $.command.run({ ...TYPED, args: 'browser' })
+  expect(spawned.map(env => env.ARCGIS_MAP_SESSION)).toEqual(['old-id', 'new-id', 'third-id'])
 })
