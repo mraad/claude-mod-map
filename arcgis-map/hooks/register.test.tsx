@@ -420,9 +420,10 @@ test('/map stop ends the bridge, closes the pane and the browser window; /map br
 test('/clear restarts the bridge under the new session id, so the pages reset; /map stop keeps it off', async ($, on) => {
   const spawned: Record<string, string>[] = []
   let id = 'old-id'
+  let nextId = 'new-id'
   on('session.start', (_, e) => ({ cwd: e.cwd }))
   on('session.end', (_, e) => {
-    id = 'new-id' // the engine moves to the new id once the old session ended
+    id = nextId // the engine moves to the new id once the old session ended
     return { sessionId: e.sessionId }
   })
   on('session.id', () => ({ value: id }))
@@ -446,10 +447,11 @@ test('/clear restarts the bridge under the new session id, so the pages reset; /
 
   // Stopped by the person: a later /clear only notes the id for the next /map pane|browser.
   await $.command.run({ ...TYPED, args: 'stop' })
-  id = 'old-id'
-  await $.session.end({ reason: 'clear', sessionId: 'old-id', resume: { id: 'old-id' } } as never)
+  id = 'new-id'
+  nextId = 'third-id'
+  await $.session.end({ reason: 'clear', sessionId: 'new-id', resume: { id: 'new-id' } } as never)
   await new Promise(resolve => setTimeout(resolve, 300))
   expect(spawned.length).toBe(2)
   await $.command.run({ ...TYPED, args: 'browser' })
-  expect(spawned.map(env => env.ARCGIS_MAP_SESSION)).toEqual(['old-id', 'new-id', 'new-id'])
+  expect(spawned.map(env => env.ARCGIS_MAP_SESSION)).toEqual(['old-id', 'new-id', 'third-id'])
 })

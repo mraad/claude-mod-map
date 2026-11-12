@@ -246,7 +246,8 @@ async function followSession($: EngineInterface, ended: string) {
   if (id === ended) return $.ui.log('arcgis-map: no new session id after session.end; the map stays', { to: 'debug' })
   session = id
   // A bridge /map stop ended, or that could not start, starts with the new id on the next /map pane|browser.
-  if (!(await killBridge())) return
+  // A /map stop during the wait above wins: no restart.
+  if (!(await killBridge()) || bridgeDown === STOPPED) return
   await startBridge($)
   await bridge?.ready
   // The new bridge's Chrome starts on a pane size; the pane re-sends one only when it changes.
