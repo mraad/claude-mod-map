@@ -123,7 +123,7 @@ const TOOLS = [
   },
   {
     name: 'screenshot',
-    description: 'Save a PNG of the live map as it shows now and answer its path. Read the file to check the map, or hand it to the user.',
+    description: 'Save a PNG of the live map as it shows now and answer its path. Call it only when the user asks for a screenshot or a picture of the map; the other tools\' replies already confirm each change.',
     inputSchema: {
       type: 'object',
       properties: {
