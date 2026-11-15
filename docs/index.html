@@ -140,15 +140,16 @@
 <p>The mod starts the bridge when the session starts. The bridge stops when the session stops.</p>
 
 <h2 id="views">5. Open the map</h2>
-<p>The command <code>/map</code> opens the map. It takes one optional word.</p>
+<p>The command <code>/map</code> opens the map. It takes one optional word. The word <code>basemap</code> takes a name after it.</p>
 <div class="wrap"><table>
   <tr><th>Command</th><th>Result</th></tr>
   <tr><td><code>/map</code></td><td>Opens the map in the pane.</td></tr>
   <tr><td><code>/map pane</code></td><td>Opens the map in the pane.</td></tr>
   <tr><td><code>/map browser</code></td><td>Opens the map in a browser window on the right half of the screen that has the focus.</td></tr>
+  <tr><td><code>/map basemap imagery</code></td><td>Changes the basemap to the name after <code>basemap</code>. Use <code>osm</code>, <code>dark-gray</code>, <code>light-gray</code>, <code>imagery</code>, <code>topo</code> or <code>streets</code>. Claude does not do a turn for this command.</td></tr>
   <tr><td><code>/map clear</code></td><td>Removes all layers and graphics. Sets the basemap to OpenStreetMap. Keeps the view. Claude does not do a turn for this command.</td></tr>
   <tr><td><code>/map stop</code></td><td>Stops the map server. Closes the pane and the browser window. Type <code>/map</code> or <code>/map browser</code> to start the map again. The map keeps its layers.</td></tr>
-  <tr><td><code>/map</code> with a different word</td><td>Shows the usage line <code>Usage: /map [pane|browser|clear|stop]</code>.</td></tr>
+  <tr><td><code>/map</code> with a different word</td><td>Shows the usage line <code>Usage: /map [pane|browser|basemap &lt;name&gt;|clear|stop]</code>.</td></tr>
 </table></div>
 <p>You can open the pane and the browser window at the same time. Each tool changes both. You can also open <code>http://127.0.0.1:8765/</code> in any browser.</p>
 

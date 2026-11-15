@@ -341,7 +341,7 @@ test('/map browser opens a Chrome app window on the right half of the focused sc
 
   await $.command.run({ ...TYPED, args: '' })
   expect(opened).toEqual(['arcgis-map'])
-  expect((await $.command.run({ ...TYPED, args: 'globe' })).text).toBe('Usage: /map [pane|browser|clear|stop]')
+  expect((await $.command.run({ ...TYPED, args: 'globe' })).text).toBe('Usage: /map [pane|browser|basemap <name>|clear|stop]')
 })
 
 test('/map browser without Chrome says so and names the URL', async ($, on) => {
@@ -361,11 +361,29 @@ test('/map clear asks the bridge to empty the map, with no model turn, and says 
     return answer
   })
 
+  expect((await $.command.run({ ...TYPED, args: 'clear graphics' })).text).toBe('Usage: /map [pane|browser|basemap <name>|clear|stop]')
+  expect(posted).toEqual([])
   expect((await $.command.run({ ...TYPED, args: 'clear' })).text).toBe('Map cleared: every layer removed, default basemap')
   expect(posted).toEqual([{ url: 'http://127.0.0.1:8765/clear', method: 'POST', token: expect.stringMatching(/.+/) }])
 
   answer = reply({ ok: false, error: 'wrong bridge token' }, 403)
   expect((await $.command.run({ ...TYPED, args: 'CLEAR' })).text).toBe('Map not cleared: wrong bridge token')
+})
+
+test('/map basemap sends set_basemap to the map, with no model turn, and says when it could not', async ($, on) => {
+  const bodies: unknown[] = []
+  let answer = reply({ ok: true, result: { basemap: 'imagery' }, state: STATE })
+  on('http.fetch', (_, e) => (bodies.push(JSON.parse(bodyText(e.init?.body))), answer))
+
+  expect((await $.command.run({ ...TYPED, args: 'basemap imagery' })).text).toBe('Basemap set to imagery')
+  expect(bodies).toEqual([{ op: 'set_basemap', args: { basemap: 'imagery' } }])
+
+  answer = reply({ ok: false, error: 'Esri basemap styles need ?apiKey=' }, 400)
+  expect((await $.command.run({ ...TYPED, args: 'BASEMAP arcgis/topographic' })).text).toBe('Basemap not changed: Esri basemap styles need ?apiKey=')
+  expect(bodies.at(-1)).toEqual({ op: 'set_basemap', args: { basemap: 'arcgis/topographic' } })
+
+  expect((await $.command.run({ ...TYPED, args: 'basemap' })).text).toBe('Usage: /map [pane|browser|basemap <name>|clear|stop]')
+  expect(bodies).toHaveLength(2)
 })
 
 test('/map stop ends the bridge, closes the pane and the browser window; /map browser starts it again', async ($, on) => {
