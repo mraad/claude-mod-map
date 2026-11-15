@@ -361,7 +361,7 @@ export const register: Register = on => {
     // Same path as the set_basemap tool, no model turn: with no map page open, the pane opens first.
     if (mode === 'basemap') {
       const name = rest.join(' ')
-      if (!name) return { text: 'Usage: /map basemap <osm|dark-gray|light-gray|imagery|topo|streets|arcgis/...>' }
+      if (!name) return { text: USAGE }
       const reply = await run($, 'set_basemap', { basemap: name })
       return { text: reply.ok ? `Basemap set to ${name}` : `Basemap not changed: ${reply.error ?? 'failed'}` }
     }

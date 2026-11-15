@@ -382,7 +382,7 @@ test('/map basemap sends set_basemap to the map, with no model turn, and says wh
   expect((await $.command.run({ ...TYPED, args: 'BASEMAP arcgis/topographic' })).text).toBe('Basemap not changed: Esri basemap styles need ?apiKey=')
   expect(bodies.at(-1)).toEqual({ op: 'set_basemap', args: { basemap: 'arcgis/topographic' } })
 
-  expect((await $.command.run({ ...TYPED, args: 'basemap' })).text).toBe('Usage: /map basemap <osm|dark-gray|light-gray|imagery|topo|streets|arcgis/...>')
+  expect((await $.command.run({ ...TYPED, args: 'basemap' })).text).toBe('Usage: /map [pane|browser|basemap <name>|clear|stop]')
   expect(bodies).toHaveLength(2)
 })
 
