@@ -88,15 +88,19 @@ let viewerFailures = 0
 let lastInput = 0
 const MAX_VIEWER_FAILURES = 3
 const IDLE_MS = msFromEnv('ARCGIS_MAP_IDLE_MS', 90000)
+const FAILURE_WINDOW_MS = msFromEnv('ARCGIS_MAP_FAILURE_WINDOW_MS', 60000)
+let lastFailure = 0
 
 function viewerDown(reason) {
   console.error(`viewer down: ${reason}`)
+  // Only failures close together count (crashes or failed starts): one long after the last gives 3 tries again.
+  if (Date.now() - lastFailure > FAILURE_WINDOW_MS) viewerFailures = 0
+  lastFailure = Date.now()
   console.log(++viewerFailures >= MAX_VIEWER_FAILURES ? `VIEWER failed ${reason}` : 'VIEWER down')
 }
 
 function startPaneViewer(size) {
   if (viewerFailures >= MAX_VIEWER_FAILURES) return
-  const startedAt = Date.now()
   const mine = startViewer({
     url: `http://${HOST}/?embedded=1`,
     columns: size.columns,
@@ -104,8 +108,6 @@ function startPaneViewer(size) {
     onFrame: (path, generation) => console.log(`FRAME ${path} ${generation}`),
     onExit: code => {
       if (viewer === mine) viewer = undefined
-      // Only crashes close together count: a Chrome that ran a minute gives the next one 3 tries again.
-      if (Date.now() - startedAt > 60000) viewerFailures = 0
       viewerDown(`Chrome exited (${code})`)
     },
     log: line => console.error(line),

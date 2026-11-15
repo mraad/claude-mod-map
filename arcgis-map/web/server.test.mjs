@@ -340,6 +340,29 @@ test('/input: events before any viewer are refused; a Chrome that cannot start i
   assert.equal(after.status, 409, 'the failed viewer was dropped, so the next size can retry')
 })
 
+test('Chrome failures close together give up (VIEWER failed); failures spread apart keep trying', async () => {
+  const viewer = await startBridge(SAVED_PORT, { ARCGIS_MAP_FAILURE_WINDOW_MS: '300' })
+  const size = () => call('POST', '/input', { body: { size: { columns: 40, rows: 10 } }, port: SAVED_PORT })
+  const failures = async n => {
+    for (let i = 0; i < 100 && viewer.lines.filter(line => line.startsWith('VIEWER')).length < n; i++) await sleep(20)
+  }
+  try {
+    for (let i = 1; i <= 3; i++) {
+      await size()
+      await failures(i)
+      await sleep(400)
+    }
+    assert.ok(!viewer.lines.some(line => line.startsWith('VIEWER failed')), 'each failure came after the window')
+    for (let i = 4; i <= 6; i++) {
+      await size()
+      await failures(i)
+    }
+    assert.match(viewer.lines.at(-1), /^VIEWER failed /)
+  } finally {
+    await stopBridge(viewer)
+  }
+})
+
 test('a page that closes without answering does not hold up the others: the error answers at once', async () => {
   const failing = page({ answer: () => ({ ok: false, error: 'broken page' }) })
   const silent = page({ answer: () => undefined })
