@@ -1,6 +1,7 @@
 # Engine-written mod types (regenerated per session)
 arcgis-map/.claude-plugin/types/
 # Per-machine Claude Code settings and session id
+.claude/settings.json
 .claude/settings.local.json
 .resume
 .DS_Store
