@@ -314,7 +314,7 @@ export const register: Register = on => {
 
     await Promise.all([
       ...TOOLS.map(tool => $.tool.register({ ...tool, isDeferred: false })),
-      $.command.register({ name: 'map', description: 'Show the ArcGIS map in the side pane or a browser window, clear it, or stop it', argumentHint: '[pane|browser|clear|stop]' }),
+      $.command.register({ name: 'map', description: 'Show the ArcGIS map in the side pane or a browser window, change its basemap, clear it, or stop it', argumentHint: '[pane|browser|basemap <name>|clear|stop]' }),
     ])
     return started
   })
@@ -336,9 +336,12 @@ export const register: Register = on => {
     return { result: JSON.stringify({ result: reply.result, map: reply.state }) }
   }).catch(($, e, next) => (next.called ? next(e) : { deny: 'arcgis-map: the tool hook failed.' }))
 
+  const USAGE = 'Usage: /map [pane|browser|basemap <name>|clear|stop]'
+
   // Both views show the same map and take the same tools; they can be open at once.
   on('command.run', { command: 'map' }, async ($, e) => {
-    const mode = e.args.trim().toLowerCase() || 'pane'
+    const [word = '', ...rest] = e.args.trim().split(/\s+/)
+    const mode = word.toLowerCase() || 'pane'
     if (mode === 'stop') return { text: await stopMap($) }
     // A bridge that /map stop ended, or that could not start, starts again for a view of the map.
     if ((mode === 'browser' || mode === 'pane') && bridgeDown) {
@@ -353,7 +356,14 @@ export const register: Register = on => {
       const reply = await call($, '/clear', {})
       return { text: reply.ok ? 'Map cleared: every layer removed, default basemap' : `Map not cleared: ${reply.error ?? 'failed'}` }
     }
-    if (mode !== 'pane') return { text: 'Usage: /map [pane|browser|clear|stop]' }
+    // Same path as the set_basemap tool, no model turn: with no map page open, the pane opens first.
+    if (mode === 'basemap') {
+      const name = rest.join(' ')
+      if (!name) return { text: 'Usage: /map basemap <osm|dark-gray|light-gray|imagery|topo|streets|arcgis/...>' }
+      const reply = await run($, 'set_basemap', { basemap: name })
+      return { text: reply.ok ? `Basemap set to ${name}` : `Basemap not changed: ${reply.error ?? 'failed'}` }
+    }
+    if (mode !== 'pane') return { text: USAGE }
     await $.ui.open({ id: PANE, title: 'ArcGIS map' })
     return { text: `Map in the pane; /map browser opens it in a browser window too` }
   })

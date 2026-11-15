@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-`arcgis-map/` is a [Claude Code mod](https://code.claude.com/docs/en/plugins/mods/overview) (a plugin with a hooks module; API: [reference](https://code.claude.com/docs/en/plugins/mods/reference)) that lets Claude drive a live ArcGIS Maps SDK for JavaScript 5.2 map: nine tools (`add_graphic`, `add_layer`, `update_layer`, `remove_layer`, `clear_graphics`, `set_basemap`, `go_to`, `screenshot`, `map_state`), the `/map [pane|browser|clear|stop]` command, and a side pane that shows the map as streamed pictures and takes mouse and keys. Public repo `github.com/mraad/claude-mod-map` (marketplace file at `.claude-plugin/marketplace.json`). No package.json, no npm dependencies: Node stdlib, the mod API (`'claude-code'`), and the installed Google Chrome.
+`arcgis-map/` is a [Claude Code mod](https://code.claude.com/docs/en/plugins/mods/overview) (a plugin with a hooks module; API: [reference](https://code.claude.com/docs/en/plugins/mods/reference)) that lets Claude drive a live ArcGIS Maps SDK for JavaScript 5.2 map: nine tools (`add_graphic`, `add_layer`, `update_layer`, `remove_layer`, `clear_graphics`, `set_basemap`, `go_to`, `screenshot`, `map_state`), the `/map [pane|browser|basemap <name>|clear|stop]` command, and a side pane that shows the map as streamed pictures and takes mouse and keys. Public repo `github.com/mraad/claude-mod-map` (marketplace file at `.claude-plugin/marketplace.json`). No package.json, no npm dependencies: Node stdlib, the mod API (`'claude-code'`), and the installed Google Chrome.
 
 ## Source of truth vs. loaded copy
 
