@@ -361,6 +361,8 @@ test('/map clear asks the bridge to empty the map, with no model turn, and says 
     return answer
   })
 
+  expect((await $.command.run({ ...TYPED, args: 'clear graphics' })).text).toBe('Usage: /map [pane|browser|basemap <name>|clear|stop]')
+  expect(posted).toEqual([])
   expect((await $.command.run({ ...TYPED, args: 'clear' })).text).toBe('Map cleared: every layer removed, default basemap')
   expect(posted).toEqual([{ url: 'http://127.0.0.1:8765/clear', method: 'POST', token: expect.stringMatching(/.+/) }])
 

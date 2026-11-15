@@ -342,6 +342,8 @@ export const register: Register = on => {
   on('command.run', { command: 'map' }, async ($, e) => {
     const [word = '', ...rest] = e.args.trim().split(/\s+/)
     const mode = word.toLowerCase() || 'pane'
+    // Only basemap takes a name: `/map clear graphics` must not clear.
+    if (rest.length && mode !== 'basemap') return { text: USAGE }
     if (mode === 'stop') return { text: await stopMap($) }
     // A bridge that /map stop ended, or that could not start, starts again for a view of the map.
     if ((mode === 'browser' || mode === 'pane') && bridgeDown) {
