@@ -174,7 +174,7 @@ async function run($: EngineInterface, op: string, args: Record<string, unknown>
   return call($, '/cmd', { op, args, waitMs: PAGE_WAIT_MS })
 }
 
-// The bridge could not start (another session holds the port): say so in the status line and in tool errors.
+// The bridge is off (another session holds the port, or /map stop): say so in the status line and in tool errors.
 async function stopped($: EngineInterface, why: string) {
   bridgeDown = why
   await update($, status, () => ({ isConnected: false, layers: [] }))
@@ -257,10 +257,8 @@ async function followSession($: EngineInterface, ended: string) {
 // /map stop: ends the bridge, closes the pane and the /map browser window.
 async function stopMap($: EngineInterface): Promise<string> {
   const running = await killBridge()
-  bridgeDown = STOPPED
-  await update($, status, () => ({ isConnected: false, layers: [] }))
+  await stopped($, STOPPED)
   await update($, frame, () => ({ path: '', generation: 0 }))
-  $.ui.status('map: off')
   await $.ui.close({ id: PANE }).catch(() => undefined)
   // Only /map browser starts a Chrome with this profile (the pane's Chrome uses a temp one); none open is exit 1.
   const killed = await $.process.run(['pkill', '-f', '--', `--user-data-dir=${$.plugin.root}/.browser-profile`]).catch(() => undefined)
