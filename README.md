@@ -1,5 +1,7 @@
 # claude-mod-map
 
+> **Deprecated.** This repository is replaced by [mraad/map-pane](https://github.com/mraad/map-pane), which merges this Claude Code mod with `ghostty-map-pane`. Install the new plugin with `/plugin install mappane --marketplace mraad/map-pane`. This repository is archived and gets no more changes.
+
 A [Claude Code mod](https://code.claude.com/docs/en/plugins/mods/overview) (`arcgis-map/`) that lets Claude drive a live ArcGIS Maps SDK for JavaScript 5.2 map: add graphics, add layers (feature, GeoJSON, CSV, GeoParquet, tile, vector tile, imagery, map image, portal item, or inline GeoJSON results), change their symbology, filter and labels, change the basemap, zoom, take screenshots, and read map state.
 
 Full documentation: [`docs/index.html`](docs/index.html) (one self-contained HTML file, images inline; download it and open it in a browser).
